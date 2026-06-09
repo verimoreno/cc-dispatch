@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cc-dispatch</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3347;
+    --accent: #5b6cf9;
+    --accent-hover: #6e7dff;
+    --text: #e2e4ef;
+    --muted: #7c8099;
+    --green: #3ecf8e;
+    --yellow: #f5a623;
+    --red: #f44;
+    --radius: 8px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface);
+  }
+
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--accent);
+  }
+
+  header .subtitle { color: var(--muted); font-size: 12px; }
+
+  .host-badge {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  header .spacer { flex: 1; }
+
+  .new-btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .new-btn:hover { background: var(--accent-hover); }
+
+  .layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Session list ── */
+  .sidebar {
+    width: 260px;
+    min-width: 200px;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 12px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .session-card {
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .session-card:hover { background: var(--surface); }
+  .session-card.active {
+    background: var(--surface2);
+    border-color: var(--accent);
+  }
+
+  .session-title {
+    font-weight: 500;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .session-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.idle    { background: var(--muted); }
+  .status-dot.running { background: var(--green); box-shadow: 0 0 5px var(--green); }
+  .status-dot.busy    { background: var(--yellow); }
+
+  .session-group {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .session-tool {
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: auto;
+  }
+
+  .empty-sidebar {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    padding: 24px 8px;
+  }
+
+  /* ── Compose panel ── */
+  .compose {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .compose-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .compose-title {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .compose-path {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', 'Fira Mono', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .compose-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    gap: 16px;
+    overflow-y: auto;
+  }
+
+  .no-session {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* ── Textarea ── */
+  .prompt-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .prompt-wrap label {
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  textarea {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+    padding: 12px 14px;
+    resize: vertical;
+    min-height: 120px;
+    outline: none;
+    transition: border-color 0.15s;
+    line-height: 1.5;
+  }
+  textarea:focus { border-color: var(--accent); }
+  textarea::placeholder { color: var(--muted); }
+
+  .send-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .hint { font-size: 11px; color: var(--muted); }
+
+  .send-btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 9px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .send-btn:hover { background: var(--accent-hover); }
+  .send-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* ── Drop zone ── */
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 28px 20px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+  }
+  .dropzone:hover, .dropzone.drag-over {
+    border-color: var(--accent);
+    background: rgba(91, 108, 249, 0.05);
+    color: var(--text);
+  }
+  .dropzone input[type=file] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  .dropzone .drop-icon { font-size: 24px; margin-bottom: 6px; }
+
+  .image-preview {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+  }
+  .image-preview img {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  .image-preview .img-name { font-size: 12px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .image-preview .clear-img { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .image-preview .clear-img:hover { color: var(--red); }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    font-size: 13px;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    z-index: 100;
+  }
+  #toast.show { opacity: 1; transform: translateY(0); }
+  #toast.ok   { border-color: var(--green); color: var(--green); }
+  #toast.err  { border-color: var(--red);   color: var(--red); }
+
+  /* ── Modal ── */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+  }
+  .modal-backdrop.open { opacity: 1; pointer-events: all; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: 360px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .modal h2 { font-size: 16px; font-weight: 600; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+  .field input, .field select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 14px;
+    padding: 9px 12px;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+    appearance: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .field input::placeholder { color: var(--muted); }
+
+  .repo-list {
+    position: absolute;
+    top: 100%;
+    left: 0; right: 0;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 300;
+  }
+  .repo-list-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .repo-list-item:hover, .repo-list-item.highlighted { background: var(--surface); color: var(--accent); }
+  .repo-list-item .repo-owner { color: var(--muted); font-size: 11px; }
+
+  .field-wrap { position: relative; }
+
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .cancel-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: var(--radius);
+    padding: 8px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .cancel-btn:hover { border-color: var(--text); color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>cc-dispatch</h1>
+  <span class="host-badge" id="host-badge">…</span>
+  <span class="subtitle" id="session-count">loading…</span>
+  <div class="spacer"></div>
+  <button class="new-btn" onclick="openModal()">+ New session</button>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+
+  <main class="compose" id="compose">
+    <div class="no-session">← select a session</div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<!-- New session modal -->
+<div class="modal-backdrop" id="modal-backdrop" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>New session</h2>
+    <div class="field">
+      <label>Repo</label>
+      <div class="field-wrap">
+        <input id="new-repo" placeholder="Search repos…" autocomplete="off"
+               oninput="filterRepos(this.value)" onfocus="showRepoList()" onblur="hideRepoList()">
+        <div class="repo-list" id="repo-list" style="display:none"></div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Branch <span id="branch-hint" style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0"></span></label>
+      <div class="field-wrap">
+        <input id="new-branch" placeholder="new-branch-name" autocomplete="off" list="branch-datalist">
+        <datalist id="branch-datalist"></datalist>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="cancel-btn" onclick="closeModal()">Cancel</button>
+      <button class="send-btn" onclick="createSession()">Spawn</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let sessions = [];
+let activeId = null;
+let pendingImage = null;
+
+// ── Fetch sessions ──────────────────────────────────────────────────────────
+
+async function fetchSessions() {
+  try {
+    const data = await fetch('/api/sessions').then(r => r.json());
+    sessions = data;
+    renderSidebar();
+  } catch (e) {
+    console.error('fetch sessions failed', e);
+  }
+}
+
+fetch('/api/host').then(r => r.json()).then(d => {
+  document.getElementById('host-badge').textContent = d.host;
+});
+
+setInterval(fetchSessions, 5000);
+fetchSessions();
+
+// ── Render sidebar ──────────────────────────────────────────────────────────
+
+function renderSidebar() {
+  const el = document.getElementById('sidebar');
+  const count = document.getElementById('session-count');
+  count.textContent = `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`;
+
+  if (!sessions.length) {
+    el.innerHTML = '<div class="empty-sidebar">No sessions running</div>';
+    return;
+  }
+
+  el.innerHTML = sessions.map(s => `
+    <div class="session-card ${s.id === activeId ? 'active' : ''}" onclick="selectSession('${s.id}')">
+      <div class="session-title" title="${s.title}">${s.title}</div>
+      <div class="session-meta">
+        <div class="status-dot ${s.status || 'idle'}"></div>
+        <span class="session-group">${s.group || ''}</span>
+        <span class="session-tool">${s.tool || ''}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Select session ──────────────────────────────────────────────────────────
+
+function selectSession(id) {
+  activeId = id;
+  pendingImage = null;
+  renderSidebar();
+  renderCompose();
+}
+
+function renderCompose() {
+  const session = sessions.find(s => s.id === activeId);
+  const compose = document.getElementById('compose');
+
+  if (!session) {
+    compose.innerHTML = '<div class="no-session">← select a session</div>';
+    return;
+  }
+
+  compose.innerHTML = `
+    <div class="compose-header">
+      <div>
+        <div class="compose-title">${session.title}</div>
+        <div class="compose-path">${session.path}</div>
+      </div>
+    </div>
+    <div class="compose-body">
+
+      <div class="prompt-wrap">
+        <textarea id="prompt-input" placeholder="Type a prompt… (Ctrl+Enter to send)" rows="5"></textarea>
+        <div id="image-area">
+          <div class="dropzone" id="dropzone"
+               ondragover="onDragOver(event)"
+               ondragleave="onDragLeave(event)"
+               ondrop="onDrop(event)">
+            <input type="file" accept="image/*" onchange="onFileSelect(event)">
+            <div>Drop / paste (Ctrl+V) an image — optional</div>
+          </div>
+        </div>
+        <div class="send-row">
+          <span class="hint" id="send-hint">Ctrl+Enter</span>
+          <button class="send-btn" id="send-btn" onclick="sendAll()">Send</button>
+        </div>
+      </div>
+
+    </div>
+  `;
+
+  // Ctrl+Enter on textarea
+  document.getElementById('prompt-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      sendAll();
+    }
+  });
+}
+
+// ── Unified send (text + optional image — always one message) ────────────────
+
+async function sendAll() {
+  if (!activeId) return;
+  const input  = document.getElementById('prompt-input');
+  const prompt = input.value.trim();
+  const btn    = document.getElementById('send-btn');
+
+  if (!prompt && !pendingImage) return;
+  btn.disabled = true;
+
+  try {
+    if (pendingImage) {
+      const form = new FormData();
+      form.append('file', pendingImage);
+      if (prompt) form.append('prompt', prompt);
+      const res = await fetch(`/api/sessions/${activeId}/image`, { method: 'POST', body: form });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      toast(`Sent → ${data.path}`, 'ok');
+      clearImage();
+    } else {
+      const res = await fetch(`/api/sessions/${activeId}/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast('Sent ✓', 'ok');
+    }
+    input.value = '';
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    input.focus();
+  }
+}
+
+// ── Image drag & drop ───────────────────────────────────────────────────────
+
+function onDragOver(e) {
+  e.preventDefault();
+  document.getElementById('dropzone')?.classList.add('drag-over');
+}
+
+function onDragLeave(e) {
+  document.getElementById('dropzone')?.classList.remove('drag-over');
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  document.getElementById('dropzone')?.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) setImage(file);
+}
+
+function onFileSelect(e) {
+  const file = e.target.files[0];
+  if (file) setImage(file);
+}
+
+function setImage(file) {
+  pendingImage = file;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    document.getElementById('image-area').innerHTML = `
+      <div class="image-preview">
+        <img src="${ev.target.result}" alt="preview">
+        <span class="img-name">${file.name}</span>
+        <button class="clear-img" onclick="clearImage()" title="Remove">✕</button>
+      </div>
+    `;
+    document.getElementById('send-btn').textContent = 'Send +image';
+    document.getElementById('send-hint').textContent = 'text above is optional';
+  };
+  reader.readAsDataURL(file);
+}
+
+// Ctrl+V anywhere on the page — grab image from clipboard
+document.addEventListener('paste', e => {
+  if (!activeId) return;
+  const items = Array.from(e.clipboardData?.items || []);
+  const imgItem = items.find(i => i.type.startsWith('image/'));
+  if (!imgItem) return;
+  e.preventDefault();
+  const file = imgItem.getAsFile();
+  if (file) setImage(new File([file], `paste-${Date.now()}.png`, { type: file.type }));
+});
+
+function clearImage() {
+  pendingImage = null;
+  document.getElementById('image-area').innerHTML = `
+    <div class="dropzone" id="dropzone"
+         ondragover="onDragOver(event)"
+         ondragleave="onDragLeave(event)"
+         ondrop="onDrop(event)">
+      <input type="file" accept="image/*" onchange="onFileSelect(event)">
+      <div>Drop / paste (Ctrl+V) an image — optional</div>
+    </div>
+  `;
+  document.getElementById('send-btn').textContent = 'Send';
+  document.getElementById('send-hint').textContent = 'Ctrl+Enter';
+}
+
+
+// ── New session modal ───────────────────────────────────────────────────────
+
+let allRepos = [];
+let selectedRepo = null; // { name, owner, full_name, default_branch }
+
+async function openModal() {
+  document.getElementById('modal-backdrop').classList.add('open');
+  document.getElementById('new-repo').value = '';
+  document.getElementById('new-branch').value = '';
+  document.getElementById('branch-hint').textContent = '';
+  document.getElementById('branch-datalist').innerHTML = '';
+  selectedRepo = null;
+  setTimeout(() => document.getElementById('new-repo').focus(), 50);
+
+  if (!allRepos.length) {
+    try {
+      allRepos = await fetch('/api/github/repos').then(r => r.json());
+    } catch(e) { /* gh not available, manual input still works */ }
+  }
+}
+
+function filterRepos(q) {
+  selectedRepo = null;
+
+  const list = document.getElementById('repo-list');
+  const matches = q.length < 1
+    ? allRepos.slice(0, 30)
+    : allRepos.filter(r => r.full_name.toLowerCase().includes(q.toLowerCase())).slice(0, 30);
+
+  list.innerHTML = matches.map((r, i) => `
+    <div class="repo-list-item" data-idx="${i}" data-full="${r.full_name}"
+         onmousedown="pickRepo(${allRepos.indexOf(r)})">
+      <span class="repo-owner">${r.owner}/</span>${r.name}
+    </div>
+  `).join('') || '<div class="repo-list-item" style="color:var(--muted)">No matches</div>';
+  list.style.display = 'block';
+}
+
+function showRepoList() {
+  filterRepos(document.getElementById('new-repo').value);
+}
+
+function hideRepoList() {
+  setTimeout(() => {
+    document.getElementById('repo-list').style.display = 'none';
+  }, 150);
+}
+
+async function pickRepo(idx) {
+  selectedRepo = allRepos[idx];
+  document.getElementById('new-repo').value = selectedRepo.full_name;
+  document.getElementById('repo-list').style.display = 'none';
+
+  const inp = document.getElementById('new-branch');
+  const hint = document.getElementById('branch-hint');
+  const dl = document.getElementById('branch-datalist');
+
+  inp.value = '';
+  inp.focus();
+  hint.textContent = '(loading existing…)';
+  dl.innerHTML = '';
+
+  try {
+    const branches = await fetch(
+      `/api/github/repos/${selectedRepo.owner}/${selectedRepo.name}/branches`
+    ).then(r => r.json());
+    dl.innerHTML = branches.map(b => `<option value="${b}">`).join('');
+    hint.textContent = `— ${branches.length} existing`;
+  } catch(e) {
+    hint.textContent = '';
+  }
+}
+
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('modal-backdrop')) return;
+  document.getElementById('modal-backdrop').classList.remove('open');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('modal-backdrop').classList.remove('open');
+});
+
+async function createSession() {
+  // repo: use the name part only (cc-spawn takes just the repo name)
+  const repoInput = document.getElementById('new-repo').value.trim();
+  const repo = selectedRepo ? selectedRepo.name : repoInput.split('/').pop();
+
+  const branch = document.getElementById('new-branch').value.trim();
+
+  if (!repo || !branch) {
+    toast('Pick a repo and branch', 'err');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo, branch }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    document.getElementById('modal-backdrop').classList.remove('open');
+    toast(`Spawning ${repo} / ${branch}…`, 'ok');
+    setTimeout(fetchSessions, 3000);
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  }
+}
+
+// ── Toast ───────────────────────────────────────────────────────────────────
+
+let toastTimer;
+function toast(msg, type = 'ok') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = '', 2800);
+}
+</script>
+</body>
+</html>
