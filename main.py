@@ -119,7 +119,7 @@ def github_repos():
     repos = json.loads(result.stdout) if result.returncode == 0 else []
 
     # Also pull org repos
-    for org in ["wearefractional"]:
+    for org in ["wearefractional", "caua-veiga"]:
         r2 = subprocess.run(
             ["gh", "repo", "list", org, "--limit", "200", "--json", "name,owner,defaultBranchRef"],
             capture_output=True, text=True,
@@ -161,8 +161,13 @@ def create_session(body: dict):
     branch = body.get("branch", "").strip()
     if not repo or not branch:
         raise HTTPException(400, "repo and branch required")
+    # If repo contains an owner (owner/name), pass as a full git URL so cc-spawn
+    # doesn't prepend its default org (wearefractional).
+    repo_arg = repo
+    if "/" in repo:
+        repo_arg = f"git@github.com:{repo}.git"
     # Spawn in a detached tmux window on the target host.
-    cmd = ["tmux", "new-window", f"cc-spawn {repo} {branch}"]
+    cmd = ["tmux", "new-window", f"cc-spawn {repo_arg} {branch}"]
     if REMOTE_HOST:
         cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST] + cmd
     subprocess.Popen(cmd)
