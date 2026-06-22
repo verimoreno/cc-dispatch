@@ -14,15 +14,15 @@ app = FastAPI()
 
 # Set CC_DISPATCH_HOST to an SSH alias to manage a remote cc-host.
 # Leave unset (or empty) for local mode.
-REMOTE_HOST = os.environ.get("CC_DISPATCH_HOST", "").strip()
+REMOTE_HOST = os.environ.get("CC_DISPATCH_HOST", "cc-host").strip()
 
 
-def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedProcess:
     if REMOTE_HOST:
         # SSH joins all trailing args into one shell string — quote each token.
         remote_cmd = " ".join(shlex.quote(a) for a in cmd)
-        cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd]
-    return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", REMOTE_HOST, remote_cmd]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
 
 
 def _run_tmux(tmux_session: str, args: list[str]):
@@ -35,10 +35,16 @@ def _run_tmux(tmux_session: str, args: list[str]):
 
 
 def get_sessions() -> list[dict]:
-    result = _run(["agent-deck", "ls", "--json"])
+    try:
+        result = _run(["agent-deck", "ls", "--json"])
+    except subprocess.TimeoutExpired:
+        return []
     if result.returncode != 0 or not result.stdout.strip():
         return []
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
 
 
 def find_session(session_id: str) -> dict:
