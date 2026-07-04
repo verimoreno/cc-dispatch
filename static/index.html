@@ -708,7 +708,9 @@ function hideRepoList() {
 async function pickRepo(idx) {
   selectedRepo = allRepos[idx];
   document.getElementById('new-repo').value = selectedRepo.full_name;
-  document.getElementById('repo-list').style.display = 'none';
+  // Don't hide the list here — hiding during mousedown (before mouseup/click fire)
+  // can cause the click event to land on the backdrop and close the modal.
+  // The onblur timeout on the input handles hiding with proper timing.
 
   const inp = document.getElementById('new-branch');
   const hint = document.getElementById('branch-hint');
@@ -740,9 +742,9 @@ document.addEventListener('keydown', e => {
 });
 
 async function createSession() {
-  // repo: use the name part only (cc-spawn takes just the repo name)
   const repoInput = document.getElementById('new-repo').value.trim();
-  const repo = selectedRepo ? selectedRepo.name : repoInput.split('/').pop();
+  // Always send owner/repo so the backend can build the correct git URL for cross-org repos.
+  const repo = selectedRepo ? selectedRepo.full_name : repoInput;
 
   const branch = document.getElementById('new-branch').value.trim();
 

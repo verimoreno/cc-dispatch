@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
@@ -178,6 +179,19 @@ def create_session(body: dict):
         cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST] + cmd
     subprocess.Popen(cmd)
     return {"ok": True}
+
+
+@app.get("/r/{filename}", response_class=HTMLResponse)
+def remote_file(filename: str):
+    """Serve an HTML file from ~/.html-out/ — local first, then SSH to remote host."""
+    local_path = Path.home() / ".html-out" / filename
+    if local_path.exists():
+        return HTMLResponse(content=local_path.read_text())
+    if REMOTE_HOST:
+        result = _run(["cat", f"~/.html-out/{filename}"], timeout=10)
+        if result.returncode == 0:
+            return HTMLResponse(content=result.stdout)
+    raise HTTPException(404, f"{filename} not found locally or on {REMOTE_HOST or 'remote'}")
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
