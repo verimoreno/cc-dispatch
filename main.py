@@ -39,6 +39,51 @@ secure_router = APIRouter(dependencies=[Depends(_check_secret)])
 
 _SPAWN_SEMAPHORE = threading.Semaphore(5)
 
+# Branches with an in-flight spawn. The get_sessions-based idempotency check
+# can't see a session until agent-deck ls reports it (~15-30s+ after spawn), so
+# duplicate from-task posts racing inside that window would each spawn a window.
+# This registry, claimed synchronously in the request handler, closes that gap.
+# Values are monotonic claim times: normal completion releases explicitly via
+# _release_branch, but if the background task never runs (process killed mid-
+# request, response error before Starlette schedules it) the explicit release is
+# missed. The TTL sweep in _claim_branch reclaims such orphans so a task_id can't
+# be black-holed forever and the dict can't grow unbounded (while claims keep
+# arriving — the sweep runs on _claim_branch, so a fully idle server keeps a few
+# small orphan strings until the next claim; negligible).
+#
+# TTL must stay safely ABOVE the true worst-case in-flight duration or it could
+# evict a still-live reservation and allow a double-spawn. That worst case is
+# larger than it looks: each get_sessions() in the session-poll loop is itself a
+# blocking _run(timeout=15). Ballpark: 15s initial ls + 15s sleep + 33×(5s+15s)
+# poll + ~135s readiness + inject ≈ 826s. 1800s leaves generous headroom; if the
+# poll count (SESSION_POLL_ITERS) or readiness deadline is raised, raise this too.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT_BRANCHES: dict[str, float] = {}
+_INFLIGHT_TTL = 1800.0  # seconds — see arithmetic above; must exceed max in-flight
+
+
+def _claim_branch(branch: str) -> bool:
+    """Reserve a branch for spawning. Returns False if one is already in flight.
+
+    Sweeps reservations older than _INFLIGHT_TTL first, so an orphaned entry
+    (background task never ran its release) self-heals instead of blocking the
+    branch permanently.
+    """
+    now = time.monotonic()
+    with _INFLIGHT_LOCK:
+        stale = [b for b, ts in _INFLIGHT_BRANCHES.items() if now - ts > _INFLIGHT_TTL]
+        for b in stale:
+            del _INFLIGHT_BRANCHES[b]
+        if branch in _INFLIGHT_BRANCHES:
+            return False
+        _INFLIGHT_BRANCHES[branch] = now
+        return True
+
+
+def _release_branch(branch: str):
+    with _INFLIGHT_LOCK:
+        _INFLIGHT_BRANCHES.pop(branch, None)
+
 _TASK_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 _REPO_RE    = re.compile(r'^[a-zA-Z0-9._-]{1,100}/[a-zA-Z0-9._-]{1,100}$')
 _CTRL_RE    = re.compile(r'[\x00-\x1f\x7f]|\x1b\[')
@@ -59,12 +104,46 @@ def _run(cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedPro
 
 
 def _run_tmux(tmux_session: str, args: list[str]):
+    # Bounded like _run/_capture_pane: a hung ssh send-keys must not block the
+    # caller forever. In _spawn_and_inject a hang here would skip the finally and
+    # leak the semaphore slot + branch reservation; raising instead lets both go.
     cmd = ["tmux"] + args
     if REMOTE_HOST:
         remote_cmd = " ".join(shlex.quote(a) for a in cmd)
-        subprocess.run(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd], check=True)
+        subprocess.run(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd], check=True, timeout=15)
     else:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=15)
+
+
+def _capture_pane(tmux_session: str) -> Optional[str]:
+    """Capture a tmux pane's text, SSH-wrapped in remote mode (via _run).
+
+    Returns the pane contents, or None if the capture command failed (e.g. the
+    session/pane doesn't exist yet). Must go through _run so it targets the same
+    host tmux_inject writes to — a bare subprocess.run would read the LOCAL tmux
+    and make the readiness gate a no-op in remote mode.
+    """
+    try:
+        result = _run(["tmux", "capture-pane", "-p", "-t", tmux_session], timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        # TimeoutExpired, or ssh/tmux missing etc. Treat as "not ready yet"
+        # rather than letting it kill the background task before injection.
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+# Marker that the Claude Code REPL has finished booting and is idle at the input
+# box: the persistent bottom-bar footer hint, which renders only once the prompt
+# accepts input (it is NOT shown under the pre-input trust/theme modals). We match
+# the footer and NOT the welcome banner — the banner prints at the very top of the
+# boot sequence, before those modals, so it would falsely signal ready while a
+# dialog is on screen and inject the prompt into it. Unlike the former ">"/"?"
+# check, the footer doesn't match clone progress or shell noise.
+_REPL_READY_MARKERS = ("? for shortcuts",)
+
+
+def _repl_ready(pane: Optional[str]) -> bool:
+    return bool(pane) and any(m in pane for m in _REPL_READY_MARKERS)
 
 
 def get_sessions() -> list[dict]:
@@ -239,12 +318,28 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
         raise HTTPException(400, "repo must be in owner/repo format")
     if len(task_title) > 200 or _CTRL_RE.search(task_title):
         raise HTTPException(400, "task_title contains invalid characters or exceeds 200 chars")
+    # prompt_extra is untrusted free text that reaches send-keys just like the
+    # title — give it the same control-char + length guard (it was previously
+    # only .strip()ed, so newlines/ANSI could fragment the injected prompt).
+    if len(prompt_extra) > 2000 or _CTRL_RE.search(prompt_extra):
+        raise HTTPException(400, "prompt contains invalid characters or exceeds 2000 chars")
+    # The injected prompt fences these fields inside "=== TASK METADATA ===" /
+    # "=== END TASK METADATA ===" markers so the agent treats them as untrusted.
+    # Reject any field that embeds the fence phrase, so it can't close the fence
+    # and smuggle top-level instructions to the agent.
+    if "TASK METADATA" in task_title or "TASK METADATA" in prompt_extra:
+        raise HTTPException(400, "field contains a reserved marker")
 
     slug     = re.sub(r"[^a-z0-9]+", "-", task_title.lower()).strip("-")[:40] or "task"
     branch   = f"feat/{task_id[:8]}-{slug}"
     repo_arg = f"git@github.com:{repo}.git"
 
+    # Dedupe before touching the semaphore so a duplicate never burns a slot.
+    if not _claim_branch(branch):
+        return {"ok": True, "branch": branch, "already_running": True}
+
     if not _SPAWN_SEMAPHORE.acquire(blocking=False):
+        _release_branch(branch)
         raise HTTPException(429, "Too many concurrent spawns — try again shortly")
 
     background_tasks.add_task(_spawn_and_inject, task_id, task_title, repo_arg, branch, prompt_extra)
@@ -283,16 +378,26 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch} task_id={task_id}", flush=True)
             return
 
-        # Wait for the Claude REPL to be ready before injecting.
+        # Wait for the Claude REPL to be ready before injecting. Capture goes
+        # through _capture_pane so it targets the remote host in remote mode.
+        # Bound on wall-clock via a monotonic deadline — a plain iteration count
+        # would balloon past 120 s because each _capture_pane can itself take up
+        # to its 10 s timeout. If the REPL never reports ready we still fall
+        # through and inject (best-effort — the footer marker may lag or the
+        # string may drift), but log a WARN so silent drops are diagnosable.
         tmux_name = session["tmux_session"]
-        for _ in range(12):  # 12 × 5 s = 60 s max
+        ready = False
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
             time.sleep(5)
-            result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", tmux_name],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0 and (">" in result.stdout or "?" in result.stdout):
+            if _repl_ready(_capture_pane(tmux_name)):
+                ready = True
                 break
+        if ready:
+            time.sleep(1)  # let the input box finish painting before the burst
+        else:
+            print(f"WARN: cc-dispatch REPL not confirmed ready after 120s; "
+                  f"injecting anyway branch={branch} task_id={task_id}", flush=True)
 
         # Wrap user-controlled fields so the agent knows they're untrusted.
         task_meta = (
@@ -312,6 +417,9 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
 
     finally:
         _SPAWN_SEMAPHORE.release()
+        # Held only through the blind window; once done, get_sessions sees the
+        # real session and takes over dedup for any later post.
+        _release_branch(branch)
 
 
 @app.get("/r/{filename}", response_class=HTMLResponse)
