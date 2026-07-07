@@ -47,11 +47,19 @@ _SPAWN_SEMAPHORE = threading.Semaphore(5)
 # _release_branch, but if the background task never runs (process killed mid-
 # request, response error before Starlette schedules it) the explicit release is
 # missed. The TTL sweep in _claim_branch reclaims such orphans so a task_id can't
-# be black-holed forever and the dict can't grow unbounded. TTL is generously
-# above the real max spawn+wait window (~5-6 min) so it never evicts a live one.
+# be black-holed forever and the dict can't grow unbounded (while claims keep
+# arriving — the sweep runs on _claim_branch, so a fully idle server keeps a few
+# small orphan strings until the next claim; negligible).
+#
+# TTL must stay safely ABOVE the true worst-case in-flight duration or it could
+# evict a still-live reservation and allow a double-spawn. That worst case is
+# larger than it looks: each get_sessions() in the session-poll loop is itself a
+# blocking _run(timeout=15). Ballpark: 15s initial ls + 15s sleep + 33×(5s+15s)
+# poll + ~135s readiness + inject ≈ 826s. 1800s leaves generous headroom; if the
+# poll count (SESSION_POLL_ITERS) or readiness deadline is raised, raise this too.
 _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT_BRANCHES: dict[str, float] = {}
-_INFLIGHT_TTL = 900.0  # seconds
+_INFLIGHT_TTL = 1800.0  # seconds — see arithmetic above; must exceed max in-flight
 
 
 def _claim_branch(branch: str) -> bool:
@@ -90,12 +98,15 @@ def _run(cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedPro
 
 
 def _run_tmux(tmux_session: str, args: list[str]):
+    # Bounded like _run/_capture_pane: a hung ssh send-keys must not block the
+    # caller forever. In _spawn_and_inject a hang here would skip the finally and
+    # leak the semaphore slot + branch reservation; raising instead lets both go.
     cmd = ["tmux"] + args
     if REMOTE_HOST:
         remote_cmd = " ".join(shlex.quote(a) for a in cmd)
-        subprocess.run(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd], check=True)
+        subprocess.run(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd], check=True, timeout=15)
     else:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=15)
 
 
 def _capture_pane(tmux_session: str) -> Optional[str]:
@@ -290,6 +301,17 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
         raise HTTPException(400, "repo must be in owner/repo format")
     if len(task_title) > 200 or _CTRL_RE.search(task_title):
         raise HTTPException(400, "task_title contains invalid characters or exceeds 200 chars")
+    # prompt_extra is untrusted free text that reaches send-keys just like the
+    # title — give it the same control-char + length guard (it was previously
+    # only .strip()ed, so newlines/ANSI could fragment the injected prompt).
+    if len(prompt_extra) > 2000 or _CTRL_RE.search(prompt_extra):
+        raise HTTPException(400, "prompt contains invalid characters or exceeds 2000 chars")
+    # The injected prompt fences these fields inside "=== TASK METADATA ===" /
+    # "=== END TASK METADATA ===" markers so the agent treats them as untrusted.
+    # Reject any field that embeds the fence phrase, so it can't close the fence
+    # and smuggle top-level instructions to the agent.
+    if "TASK METADATA" in task_title or "TASK METADATA" in prompt_extra:
+        raise HTTPException(400, "field contains a reserved marker")
 
     slug     = re.sub(r"[^a-z0-9]+", "-", task_title.lower()).strip("-")[:40] or "task"
     branch   = f"feat/{task_id[:8]}-{slug}"
