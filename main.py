@@ -139,7 +139,11 @@ def _capture_pane(tmux_session: str) -> Optional[str]:
 # boot sequence, before those modals, so it would falsely signal ready while a
 # dialog is on screen and inject the prompt into it. Unlike the former ">"/"?"
 # check, the footer doesn't match clone progress or shell noise.
-_REPL_READY_MARKERS = ("? for shortcuts",)
+# `ccd` launches Claude Code with bypass-permissions, whose footer reads
+# "bypass permissions on (shift+tab to cycle)" instead of "? for shortcuts";
+# match any of the footer hints so the gate fires in either mode. All three are
+# footer strings, so the "not under a modal" rationale above still holds.
+_REPL_READY_MARKERS = ("? for shortcuts", "shift+tab to cycle", "bypass permissions")
 
 
 def _repl_ready(pane: Optional[str]) -> bool:
@@ -353,7 +357,7 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             if branch in s.get("title", "") or branch in s.get("path", ""):
                 return
 
-        spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)} && ccd"
+        spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
         if REMOTE_HOST:
             remote_cmd = " ".join(shlex.quote(a) for a in ["tmux", "new-window", spawn_cmd])
             subprocess.Popen(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd])
@@ -378,25 +382,45 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch} task_id={task_id}", flush=True)
             return
 
-        # Wait for the Claude REPL to be ready before injecting. Capture goes
+        # The session comes up at a plain container shell — cc-spawn's session
+        # command is `docker exec … bash`, and its own `&& ccd` can't help
+        # because cc-spawn ends by exec-ing `agent-deck session attach`, so that
+        # ccd would only ever run in the host scratch window, never in this
+        # session. Launch Claude Code here, in the session's own terminal.
+        tmux_name = session["tmux_session"]
+        tmux_inject(tmux_name, "ccd")
+
+        # Then wait for the REPL to be ready before injecting. Capture goes
         # through _capture_pane so it targets the remote host in remote mode.
         # Bound on wall-clock via a monotonic deadline — a plain iteration count
-        # would balloon past 120 s because each _capture_pane can itself take up
-        # to its 10 s timeout. If the REPL never reports ready we still fall
-        # through and inject (best-effort — the footer marker may lag or the
-        # string may drift), but log a WARN so silent drops are diagnosable.
-        tmux_name = session["tmux_session"]
+        # would balloon because each _capture_pane can itself take up to its 10 s
+        # timeout. If the REPL never reports ready we still fall through and
+        # inject (best-effort — the footer marker may lag or the string may
+        # drift), but log a WARN so silent drops are diagnosable.
+        # Any sign the TUI has started — used only to decide whether re-sending
+        # `ccd` is safe, so a slow-but-booting REPL never eats a stray keystroke
+        # as its first prompt.
+        started_markers = _REPL_READY_MARKERS + ("Welcome to Claude Code", "╭", "╰")
         ready = False
-        deadline = time.monotonic() + 120
+        relaunched = False
+        start = time.monotonic()
+        deadline = start + 150
         while time.monotonic() < deadline:
             time.sleep(5)
-            if _repl_ready(_capture_pane(tmux_name)):
+            pane = _capture_pane(tmux_name)
+            if _repl_ready(pane):
                 ready = True
                 break
+            # The `ccd` keystroke can race the container shell coming up. If
+            # nothing has started ~45 s in, re-send it once.
+            if not relaunched and time.monotonic() - start > 45 \
+                    and not (pane and any(m in pane for m in started_markers)):
+                tmux_inject(tmux_name, "ccd")
+                relaunched = True
         if ready:
             time.sleep(1)  # let the input box finish painting before the burst
         else:
-            print(f"WARN: cc-dispatch REPL not confirmed ready after 120s; "
+            print(f"WARN: cc-dispatch REPL not confirmed ready after 150s; "
                   f"injecting anyway branch={branch} task_id={task_id}", flush=True)
 
         # Wrap user-controlled fields so the agent knows they're untrusted.
@@ -414,6 +438,11 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             f"implementation plan. Do not write any code until the plan is complete."
         )
         tmux_inject(tmux_name, initial_prompt)
+        # The multi-line prompt lands as one paste burst; Claude Code's paste
+        # detection swallows tmux_inject's trailing Enter, leaving it unsubmitted.
+        # A second Enter, once the burst settles, submits it.
+        time.sleep(0.8)
+        _run_tmux(tmux_name, ["send-keys", "-t", tmux_name, "Enter"])
 
     finally:
         _SPAWN_SEMAPHORE.release()
