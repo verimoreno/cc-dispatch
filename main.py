@@ -39,6 +39,27 @@ secure_router = APIRouter(dependencies=[Depends(_check_secret)])
 
 _SPAWN_SEMAPHORE = threading.Semaphore(5)
 
+# Branches with an in-flight spawn. The get_sessions-based idempotency check
+# can't see a session until agent-deck ls reports it (~15-30s+ after spawn), so
+# duplicate from-task posts racing inside that window would each spawn a window.
+# This registry, claimed synchronously in the request handler, closes that gap.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT_BRANCHES: set[str] = set()
+
+
+def _claim_branch(branch: str) -> bool:
+    """Reserve a branch for spawning. Returns False if one is already in flight."""
+    with _INFLIGHT_LOCK:
+        if branch in _INFLIGHT_BRANCHES:
+            return False
+        _INFLIGHT_BRANCHES.add(branch)
+        return True
+
+
+def _release_branch(branch: str):
+    with _INFLIGHT_LOCK:
+        _INFLIGHT_BRANCHES.discard(branch)
+
 _TASK_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 _REPO_RE    = re.compile(r'^[a-zA-Z0-9._-]{1,100}/[a-zA-Z0-9._-]{1,100}$')
 _CTRL_RE    = re.compile(r'[\x00-\x1f\x7f]|\x1b\[')
@@ -253,7 +274,12 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
     branch   = f"feat/{task_id[:8]}-{slug}"
     repo_arg = f"git@github.com:{repo}.git"
 
+    # Dedupe before touching the semaphore so a duplicate never burns a slot.
+    if not _claim_branch(branch):
+        return {"ok": True, "branch": branch, "already_running": True}
+
     if not _SPAWN_SEMAPHORE.acquire(blocking=False):
+        _release_branch(branch)
         raise HTTPException(429, "Too many concurrent spawns — try again shortly")
 
     background_tasks.add_task(_spawn_and_inject, task_id, task_title, repo_arg, branch, prompt_extra)
@@ -325,6 +351,9 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
 
     finally:
         _SPAWN_SEMAPHORE.release()
+        # Held only through the blind window; once done, get_sessions sees the
+        # real session and takes over dedup for any later post.
+        _release_branch(branch)
 
 
 @app.get("/r/{filename}", response_class=HTMLResponse)
