@@ -39,14 +39,15 @@ secure_router = APIRouter(dependencies=[Depends(_check_secret)])
 
 _SPAWN_SEMAPHORE = threading.Semaphore(5)
 
-_TASK_ID_RE   = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-_REPO_RE      = re.compile(r'^[a-zA-Z0-9._-]{1,100}/[a-zA-Z0-9._-]{1,100}$')
+_TASK_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+_REPO_RE    = re.compile(r'^[a-zA-Z0-9._-]{1,100}/[a-zA-Z0-9._-]{1,100}$')
+_CTRL_RE    = re.compile(r'[\x00-\x1f\x7f]|\x1b\[')
+# Bare repo name (no owner) — cc-spawn prepends its default org for this form.
 _REPO_BARE_RE = re.compile(r'^[a-zA-Z0-9._-]{1,100}$')
 # Git branch name, restricted to a shell/ref-safe charset; must not start with
 # '-' (would look like a flag) or '/'. Real protection is shlex.quote at the
 # call site — this just rejects obviously-bad input early.
-_BRANCH_RE    = re.compile(r'^[a-zA-Z0-9._][a-zA-Z0-9._/-]{0,199}$')
-_CTRL_RE      = re.compile(r'[\x00-\x1f\x7f]|\x1b\[')
+_BRANCH_RE = re.compile(r'^[a-zA-Z0-9._][a-zA-Z0-9._/-]{0,199}$')
 
 
 def _run(cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedProcess:
