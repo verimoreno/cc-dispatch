@@ -61,6 +61,32 @@ def _run_tmux(tmux_session: str, args: list[str]):
         subprocess.run(cmd, check=True)
 
 
+def _capture_pane(tmux_session: str) -> Optional[str]:
+    """Capture a tmux pane's text, SSH-wrapped in remote mode (via _run).
+
+    Returns the pane contents, or None if the capture command failed (e.g. the
+    session/pane doesn't exist yet). Must go through _run so it targets the same
+    host tmux_inject writes to — a bare subprocess.run would read the LOCAL tmux
+    and make the readiness gate a no-op in remote mode.
+    """
+    try:
+        result = _run(["tmux", "capture-pane", "-p", "-t", tmux_session], timeout=10)
+    except subprocess.TimeoutExpired:
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+# Markers that indicate the Claude Code REPL has finished booting and is idle at
+# the prompt (idle footer hint / welcome banner). Kept loose enough to survive
+# minor UI wording changes but specific enough not to match cc-spawn/clone output
+# — unlike the former ">"/"?" check, which matched clone progress and shell noise.
+_REPL_READY_MARKERS = ("? for shortcuts", "Welcome to Claude Code")
+
+
+def _repl_ready(pane: Optional[str]) -> bool:
+    return bool(pane) and any(m in pane for m in _REPL_READY_MARKERS)
+
+
 def get_sessions() -> list[dict]:
     try:
         result = _run(["agent-deck", "ls", "--json"])
@@ -266,16 +292,20 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch} task_id={task_id}", flush=True)
             return
 
-        # Wait for the Claude REPL to be ready before injecting.
+        # Wait for the Claude REPL to be ready before injecting. Capture goes
+        # through _capture_pane so it targets the remote host in remote mode;
+        # if the REPL never reports ready we still fall through and inject after
+        # the cap (best-effort), but we log it so silent drops are diagnosable.
         tmux_name = session["tmux_session"]
-        for _ in range(12):  # 12 × 5 s = 60 s max
+        ready = False
+        for _ in range(24):  # 24 × 5 s = 120 s max
             time.sleep(5)
-            result = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", tmux_name],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0 and (">" in result.stdout or "?" in result.stdout):
+            if _repl_ready(_capture_pane(tmux_name)):
+                ready = True
                 break
+        if not ready:
+            print(f"WARN: cc-dispatch REPL not confirmed ready after 120s; "
+                  f"injecting anyway branch={branch} task_id={task_id}", flush=True)
 
         # Wrap user-controlled fields so the agent knows they're untrusted.
         task_meta = (
