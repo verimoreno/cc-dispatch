@@ -43,22 +43,38 @@ _SPAWN_SEMAPHORE = threading.Semaphore(5)
 # can't see a session until agent-deck ls reports it (~15-30s+ after spawn), so
 # duplicate from-task posts racing inside that window would each spawn a window.
 # This registry, claimed synchronously in the request handler, closes that gap.
+# Values are monotonic claim times: normal completion releases explicitly via
+# _release_branch, but if the background task never runs (process killed mid-
+# request, response error before Starlette schedules it) the explicit release is
+# missed. The TTL sweep in _claim_branch reclaims such orphans so a task_id can't
+# be black-holed forever and the dict can't grow unbounded. TTL is generously
+# above the real max spawn+wait window (~5-6 min) so it never evicts a live one.
 _INFLIGHT_LOCK = threading.Lock()
-_INFLIGHT_BRANCHES: set[str] = set()
+_INFLIGHT_BRANCHES: dict[str, float] = {}
+_INFLIGHT_TTL = 900.0  # seconds
 
 
 def _claim_branch(branch: str) -> bool:
-    """Reserve a branch for spawning. Returns False if one is already in flight."""
+    """Reserve a branch for spawning. Returns False if one is already in flight.
+
+    Sweeps reservations older than _INFLIGHT_TTL first, so an orphaned entry
+    (background task never ran its release) self-heals instead of blocking the
+    branch permanently.
+    """
+    now = time.monotonic()
     with _INFLIGHT_LOCK:
+        stale = [b for b, ts in _INFLIGHT_BRANCHES.items() if now - ts > _INFLIGHT_TTL]
+        for b in stale:
+            del _INFLIGHT_BRANCHES[b]
         if branch in _INFLIGHT_BRANCHES:
             return False
-        _INFLIGHT_BRANCHES.add(branch)
+        _INFLIGHT_BRANCHES[branch] = now
         return True
 
 
 def _release_branch(branch: str):
     with _INFLIGHT_LOCK:
-        _INFLIGHT_BRANCHES.discard(branch)
+        _INFLIGHT_BRANCHES.pop(branch, None)
 
 _TASK_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 _REPO_RE    = re.compile(r'^[a-zA-Z0-9._-]{1,100}/[a-zA-Z0-9._-]{1,100}$')
@@ -92,16 +108,21 @@ def _capture_pane(tmux_session: str) -> Optional[str]:
     """
     try:
         result = _run(["tmux", "capture-pane", "-p", "-t", tmux_session], timeout=10)
-    except subprocess.TimeoutExpired:
+    except (subprocess.SubprocessError, OSError):
+        # TimeoutExpired, or ssh/tmux missing etc. Treat as "not ready yet"
+        # rather than letting it kill the background task before injection.
         return None
     return result.stdout if result.returncode == 0 else None
 
 
-# Markers that indicate the Claude Code REPL has finished booting and is idle at
-# the prompt (idle footer hint / welcome banner). Kept loose enough to survive
-# minor UI wording changes but specific enough not to match cc-spawn/clone output
-# — unlike the former ">"/"?" check, which matched clone progress and shell noise.
-_REPL_READY_MARKERS = ("? for shortcuts", "Welcome to Claude Code")
+# Marker that the Claude Code REPL has finished booting and is idle at the input
+# box: the persistent bottom-bar footer hint, which renders only once the prompt
+# accepts input (it is NOT shown under the pre-input trust/theme modals). We match
+# the footer and NOT the welcome banner — the banner prints at the very top of the
+# boot sequence, before those modals, so it would falsely signal ready while a
+# dialog is on screen and inject the prompt into it. Unlike the former ">"/"?"
+# check, the footer doesn't match clone progress or shell noise.
+_REPL_READY_MARKERS = ("? for shortcuts",)
 
 
 def _repl_ready(pane: Optional[str]) -> bool:
@@ -319,17 +340,23 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             return
 
         # Wait for the Claude REPL to be ready before injecting. Capture goes
-        # through _capture_pane so it targets the remote host in remote mode;
-        # if the REPL never reports ready we still fall through and inject after
-        # the cap (best-effort), but we log it so silent drops are diagnosable.
+        # through _capture_pane so it targets the remote host in remote mode.
+        # Bound on wall-clock via a monotonic deadline — a plain iteration count
+        # would balloon past 120 s because each _capture_pane can itself take up
+        # to its 10 s timeout. If the REPL never reports ready we still fall
+        # through and inject (best-effort — the footer marker may lag or the
+        # string may drift), but log a WARN so silent drops are diagnosable.
         tmux_name = session["tmux_session"]
         ready = False
-        for _ in range(24):  # 24 × 5 s = 120 s max
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
             time.sleep(5)
             if _repl_ready(_capture_pane(tmux_name)):
                 ready = True
                 break
-        if not ready:
+        if ready:
+            time.sleep(1)  # let the input box finish painting before the burst
+        else:
             print(f"WARN: cc-dispatch REPL not confirmed ready after 120s; "
                   f"injecting anyway branch={branch} task_id={task_id}", flush=True)
 
