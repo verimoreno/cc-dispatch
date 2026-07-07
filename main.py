@@ -42,6 +42,12 @@ _SPAWN_SEMAPHORE = threading.Semaphore(5)
 _TASK_ID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 _REPO_RE    = re.compile(r'^[a-zA-Z0-9._-]{1,100}/[a-zA-Z0-9._-]{1,100}$')
 _CTRL_RE    = re.compile(r'[\x00-\x1f\x7f]|\x1b\[')
+# Bare repo name (no owner) — cc-spawn prepends its default org for this form.
+_REPO_BARE_RE = re.compile(r'^[a-zA-Z0-9._-]{1,100}$')
+# Git branch name, restricted to a shell/ref-safe charset; must not start with
+# '-' (would look like a flag) or '/'. Real protection is shlex.quote at the
+# call site — this just rejects obviously-bad input early.
+_BRANCH_RE = re.compile(r'^[a-zA-Z0-9._][a-zA-Z0-9._/-]{0,199}$')
 
 
 def _run(cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedProcess:
@@ -194,15 +200,26 @@ def create_session(body: dict):
     branch = body.get("branch", "").strip()
     if not repo or not branch:
         raise HTTPException(400, "repo and branch required")
+    # repo is either "owner/name" or a bare "name" (cc-spawn prepends its default
+    # org for the bare form). Validate before it reaches a shell.
+    if not (_REPO_RE.fullmatch(repo) or _REPO_BARE_RE.fullmatch(repo)):
+        raise HTTPException(400, "repo must be 'owner/name' or 'name'")
+    if not _BRANCH_RE.fullmatch(branch):
+        raise HTTPException(400, "branch has invalid characters")
     # If repo contains an owner (owner/name), pass as a full git URL so cc-spawn
     # doesn't prepend its default org (wearefractional).
     repo_arg = repo
     if "/" in repo:
         repo_arg = f"git@github.com:{repo}.git"
-    # Spawn in a detached tmux window on the target host.
-    cmd = ["tmux", "new-window", f"cc-spawn {repo_arg} {branch}"]
+    # Spawn in a detached tmux window on the target host. Quote every field that
+    # reaches the shell — matching _spawn_and_inject — so repo/branch can't inject
+    # commands even though they're now regex-constrained (defense in depth).
+    spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
     if REMOTE_HOST:
-        cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST] + cmd
+        remote_cmd = " ".join(shlex.quote(a) for a in ["tmux", "new-window", spawn_cmd])
+        cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd]
+    else:
+        cmd = ["tmux", "new-window", spawn_cmd]
     subprocess.Popen(cmd)
     return {"ok": True}
 
