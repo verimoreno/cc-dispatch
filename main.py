@@ -335,7 +335,18 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
         raise HTTPException(400, "field contains a reserved marker")
 
     slug     = re.sub(r"[^a-z0-9]+", "-", task_title.lower()).strip("-")[:40] or "task"
-    branch   = f"feat/{task_id[:8]}-{slug}"
+    # cc-spawn names the container AND its hostname "<repo>-<branch with / -> ->"
+    # and docker rejects hostnames longer than 63 chars, so a long title used to
+    # kill the spawn silently (compose failed after from-task had already
+    # returned 200; the session never appeared). Budget the slug so the derived
+    # session name always fits: len(repo_name) + len("-feat-") + 8 + len("-")
+    # == len(repo_name) + 15 chars of fixed overhead.
+    repo_name = repo.split("/", 1)[1]
+    max_slug  = 63 - (len(repo_name) + 15)
+    # max(8, ...) keeps a usable slug even for absurdly long repo names; those
+    # would still overflow, but no repo here is anywhere near 40 chars.
+    slug      = slug[:max(8, max_slug)].rstrip("-") or "task"
+    branch    = f"feat/{task_id[:8]}-{slug}"
     repo_arg = f"git@github.com:{repo}.git"
 
     # Dedupe before touching the semaphore so a duplicate never burns a slot.
