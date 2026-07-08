@@ -343,9 +343,12 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
     # == len(repo_name) + 15 chars of fixed overhead.
     repo_name = repo.split("/", 1)[1]
     max_slug  = 63 - (len(repo_name) + 15)
-    # max(8, ...) keeps a usable slug even for absurdly long repo names; those
-    # would still overflow, but no repo here is anywhere near 40 chars.
-    slug      = slug[:max(8, max_slug)].rstrip("-") or "task"
+    # A repo name over 40 chars can't fit any usable slug — fail LOUDLY at
+    # request time instead of letting the spawn die silently later (the exact
+    # failure mode this budget exists to prevent).
+    if max_slug < 8:
+        raise HTTPException(400, f"repo name '{repo_name}' too long for session naming (max 40 chars)")
+    slug      = slug[:max_slug].rstrip("-") or "task"
     branch    = f"feat/{task_id[:8]}-{slug}"
     repo_arg = f"git@github.com:{repo}.git"
 
