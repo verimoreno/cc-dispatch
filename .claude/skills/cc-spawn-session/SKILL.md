@@ -1,6 +1,6 @@
 ---
 name: cc-spawn-session
-description: Spawn a new cc-spawn session on cc-host over SSH and hand it a task — create the worktree+container with cc-spawn, launch Claude Code with ccd, wait for the REPL to be ready, then inject the initial prompt. Use when Veri says "spawn a session", "create a session for <repo>", "dispatch this to a session", "run this task in a new session on the host", or "start an agent on <branch>". Completes the lifecycle with cc-supervise (monitor) and cc-cleanup-sessions (reap).
+description: Spawn a new cc-spawn session on cc-host over SSH and hand it a task — create the worktree+container with cc-spawn, launch Claude Code with ccd, wait for the REPL to be ready, then inject the initial prompt. Also covers spawning an OpenCode fleet session (cc-arch / cc-code) — same flow, auto-launched, see the OpenCode variant section. Use when Veri says "spawn a session", "create a session for <repo>", "dispatch this to a session", "run this task in a new session on the host", "start an agent on <branch>", or "spawn an opencode / arch / code session". Completes the lifecycle with cc-supervise (monitor) and cc-cleanup-sessions (reap).
 license: Internal — Fractional / Veri
 ---
 
@@ -139,6 +139,36 @@ Capture the pane once more and confirm the prompt is gone from the input box
 `session <name> · repo/branch · worktree <path> · tmux <TS> · prompt submitted ✓`
 
 Suggest `/loop 5m cc-supervise` (or a one-shot cc-supervise) to watch it.
+
+## Variant — OpenCode fleet sessions (cc-arch / cc-code)
+
+To spawn an **OpenCode** session instead of Claude (architecture with `cc-arch`, coding with
+`cc-code` — see the `cc-docker-host-setup` skill's HANDOFF.md / CC-USAGE.md), the procedure is
+the same shape with three differences:
+
+1. **Spawn** (step 2) with the fleet command, which appends `-arch`/`-code` to the session name
+   and auto-suffixes the worktree:
+   ```bash
+   ssh cc-host 'tmux new-window "cc-code NAME BRANCH"'   # build/coder  (Kimi K2.7-code on Go)
+   ssh cc-host 'tmux new-window "cc-arch NAME BRANCH"'   # plan/architect (MiniMax M2.5 on Go)
+   # optional 3rd arg picks the model: go:kimi3 (Go subscription) | kimi3 (OpenRouter) | any slug
+   ```
+   The registered `title` is `NAME-BRANCH-code` (or `-arch`); match on that in steps 1 & 3.
+   Use a DIFFERENT branch for an arch vs a code session (git won't co-check-out one branch twice).
+
+2. **No `ccd` step.** cc-arch/cc-code **auto-launch OpenCode** (via `ocd`) on first spawn — skip
+   step 4 entirely. The **readiness marker** (step 5) is the OpenCode TUI, not the Claude footer:
+   gate on any of `Ask anything…` · `tab agents  ctrl+p commands` · the `⊙ N MCP` status line.
+   (Reattaching a running session does NOT relaunch, so never re-send a launcher into it.)
+
+3. **Inject** (step 6) is simpler: `send-keys -l "PROMPT"` + a **single** `Enter` submits it —
+   OpenCode has **no** paste-detection quirk, so the delayed second Enter isn't needed (harmless
+   if sent). Multi-line still via `load-buffer` / `paste-buffer` + one Enter.
+
+**Teardown** uses the 3-arg cleanup: `cc-cleanup-worktree <repo> <branch> <arch|code>` (then
+`cc-stop <session-name>` first, as usual). OpenCode sessions bill the OpenCode Go subscription by
+default (flat-rate); heavy parallel fan-outs can hit Go's $12/5h cap — use bare model shorthands
+(OpenRouter, pay-per-token) for those.
 
 ## Notes & guardrails
 
