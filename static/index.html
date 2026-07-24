@@ -139,6 +139,18 @@
     letter-spacing: 0.05em;
   }
 
+  .agent-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .agent-badge.opencode { border-color: var(--yellow); color: var(--yellow); }
+  .agent-badge.codex    { border-color: var(--green);  color: var(--green); }
+
   .session-tool {
     font-size: 11px;
     color: var(--muted);
@@ -321,6 +333,7 @@
   #toast.show { opacity: 1; transform: translateY(0); }
   #toast.ok   { border-color: var(--green); color: var(--green); }
   #toast.err  { border-color: var(--red);   color: var(--red); }
+  #toast.warn { border-color: var(--yellow); color: var(--yellow); max-width: 420px; }
 
   /* ── Modal ── */
   .modal-backdrop {
@@ -471,6 +484,24 @@ fetch('/api/host').then(r => r.json()).then(d => {
 setInterval(fetchSessions, 5000);
 fetchSessions();
 
+// ── Which agent CLI drives a session — mirrors agent_kind() in main.py ──────
+// cc-spawn -> work/Claude Code · cc-arch|cc-code -> arch|code/OpenCode ·
+// cc-codex -> codex/Codex. Group first, name suffix as fallback.
+const GROUP_KINDS = { work: 'claude', arch: 'opencode', code: 'opencode', codex: 'codex' };
+
+// Returns '' when the metadata doesn't say — sessions get regrouped and agents
+// get launched by hand (e.g. a Codex session in group "Foraudits"), and a
+// confidently wrong badge is worse than none. The selected session gets the
+// truth from /agent, which reads the live pane.
+function agentKind(s) {
+  const g = (s.group || '').trim().toLowerCase();
+  if (GROUP_KINDS[g]) return GROUP_KINDS[g];
+  const t = (s.title || '').trim().toLowerCase();
+  if (t.endsWith('-arch') || t.endsWith('-code')) return 'opencode';
+  if (t.endsWith('-codex')) return 'codex';
+  return '';
+}
+
 // ── Render sidebar ──────────────────────────────────────────────────────────
 
 function renderSidebar() {
@@ -488,6 +519,7 @@ function renderSidebar() {
       <div class="session-title" title="${s.title}">${s.title}</div>
       <div class="session-meta">
         <div class="status-dot ${s.status || 'idle'}"></div>
+        ${agentKind(s) ? `<span class="agent-badge ${agentKind(s)}">${agentKind(s)}</span>` : ''}
         <span class="session-group">${s.group || ''}</span>
         <span class="session-tool">${s.tool || ''}</span>
       </div>
@@ -516,7 +548,7 @@ function renderCompose() {
   compose.innerHTML = `
     <div class="compose-header">
       <div>
-        <div class="compose-title">${session.title}</div>
+        <div class="compose-title">${session.title} <span class="agent-badge ${agentKind(session)}" id="agent-badge">${agentKind(session) || '…'}</span></div>
         <div class="compose-path">${session.path}</div>
       </div>
     </div>
@@ -541,6 +573,18 @@ function renderCompose() {
 
     </div>
   `;
+
+  // Replace the metadata guess with what's actually running in the pane.
+  fetch(`/api/sessions/${session.id}/agent`)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      const badge = document.getElementById('agent-badge');
+      if (!d || !badge || activeId !== session.id) return;
+      badge.textContent = d.agent;
+      badge.className = `agent-badge ${d.agent}`;
+      badge.title = d.source === 'pane' ? 'detected from the live session' : 'guessed from the agent-deck group';
+    })
+    .catch(() => {});
 
   // Ctrl+Enter on textarea
   document.getElementById('prompt-input').addEventListener('keydown', e => {
@@ -570,7 +614,11 @@ async function sendAll() {
       const res = await fetch(`/api/sessions/${activeId}/image`, { method: 'POST', body: form });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      toast(`Sent → ${data.path}`, 'ok');
+      // data.note warns when the target CLI's model can't actually see images
+      // (OpenCode's default fleet models are text-only) — surface it instead of
+      // letting the send look successful and the agent answer "I can't view it".
+      if (data.note) toast(data.note, 'warn');
+      else toast(`Sent → ${data.path}`, 'ok');
       clearImage();
     } else {
       const res = await fetch(`/api/sessions/${activeId}/prompt`, {

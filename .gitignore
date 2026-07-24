@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 *.png
+.env
+*.log
+.playwright-mcp/
