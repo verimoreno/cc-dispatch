@@ -103,16 +103,15 @@ def _run(cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedPro
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
 
 
-def _run_tmux(tmux_session: str, args: list[str]):
+def _run_tmux(tmux_session: str, args: list[str], stdin_text: Optional[str] = None):
     # Bounded like _run/_capture_pane: a hung ssh send-keys must not block the
     # caller forever. In _spawn_and_inject a hang here would skip the finally and
     # leak the semaphore slot + branch reservation; raising instead lets both go.
     cmd = ["tmux"] + args
     if REMOTE_HOST:
         remote_cmd = " ".join(shlex.quote(a) for a in cmd)
-        subprocess.run(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd], check=True, timeout=15)
-    else:
-        subprocess.run(cmd, check=True, timeout=15)
+        cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd]
+    subprocess.run(cmd, check=True, timeout=15, input=stdin_text, text=stdin_text is not None)
 
 
 def _capture_pane(tmux_session: str) -> Optional[str]:
@@ -132,6 +131,72 @@ def _capture_pane(tmux_session: str) -> Optional[str]:
     return result.stdout if result.returncode == 0 else None
 
 
+# ── Which agent CLI is driving a session? ────────────────────────────────────
+# The host spawners register distinct agent-deck groups and name suffixes:
+#   cc-spawn -> group "work",  no suffix     -> Claude Code   (launcher `ccd`)
+#   cc-arch  -> group "arch",  "-arch"       -> OpenCode      (launcher `ocd`)
+#   cc-code  -> group "code",  "-code"       -> OpenCode      (launcher `ocd`)
+#   cc-codex -> group "codex", "-codex"      -> Codex CLI     (launcher `cxd`)
+# The group is authoritative; the title suffix is a fallback for sessions
+# registered with a custom CC_AGENTDECK_GROUP. Unknown -> claude (the default
+# fleet and the only kind /api/sessions/from-task spawns).
+_GROUP_KINDS = {"work": "claude", "arch": "opencode", "code": "opencode", "codex": "codex"}
+_SUFFIX_KINDS = (("-arch", "opencode"), ("-code", "opencode"), ("-codex", "codex"))
+
+
+# …but the group is only a hint, not the truth: a session spawned with cc-spawn
+# (group "work") can have Codex or OpenCode launched in it by hand, and sessions
+# get regrouped freely (a live example: "foraudits-questionnaires_review" is in
+# group "Foraudits" and runs Codex). So the pane is the authority when we can
+# read it — these strings are each CLI's persistent chrome, verified against
+# Claude Code 2.1.218, OpenCode 1.18.4 and Codex 0.145.0.
+_PANE_MARKERS = (
+    ("opencode", ("ctrl+p commands", "tab agents")),
+    ("claude", ("bypass permissions", "? for shortcuts", "shift+tab to cycle")),
+    ("codex", ("OpenAI Codex", "/model to change", "Implement {feature}", "codex mcp add")),
+)
+
+# Codex's banner scrolls out of the pane once a session has been working for a
+# while, and its composer shows a rotating suggestion rather than a fixed
+# placeholder — so the substrings above only catch a freshly-started Codex. What
+# does persist is its chrome: the "›" composer gutter and the status line
+# "<model> <effort> · ~/work". Checked after the other two, whose own markers are
+# more specific.
+_CODEX_PANE_RE = re.compile(
+    r"(?m)^\s*› |^\s*\S+ (?:default|minimal|low|medium|high|xhigh) · ~/"
+)
+
+
+def agent_kind(session: dict) -> str:
+    """Best guess from agent-deck metadata alone — cheap, no SSH round-trip."""
+    group = (session.get("group") or "").strip().lower()
+    if group in _GROUP_KINDS:
+        return _GROUP_KINDS[group]
+    title = (session.get("title") or "").strip().lower()
+    for suffix, kind in _SUFFIX_KINDS:
+        if title.endswith(suffix):
+            return kind
+    return "claude"
+
+
+def detect_agent_kind(session: dict) -> tuple[str, str]:
+    """Read the session's pane to see which CLI is actually running.
+
+    Returns (kind, source) where source is "pane" (read off the live TUI) or
+    "group" (fell back to the metadata guess — pane unreadable, or the CLI is
+    mid-boot / scrolled past its chrome). One SSH round-trip, so this is for
+    per-send calls, not the 5 s session-list poll.
+    """
+    pane = _capture_pane(session.get("tmux_session", ""))
+    if pane:
+        for kind, markers in _PANE_MARKERS:
+            if any(m in pane for m in markers):
+                return kind, "pane"
+        if _CODEX_PANE_RE.search(pane):
+            return "codex", "pane"
+    return agent_kind(session), "group"
+
+
 # Marker that the Claude Code REPL has finished booting and is idle at the input
 # box: the persistent bottom-bar footer hint, which renders only once the prompt
 # accepts input (it is NOT shown under the pre-input trust/theme modals). We match
@@ -145,9 +210,22 @@ def _capture_pane(tmux_session: str) -> Optional[str]:
 # footer strings, so the "not under a modal" rationale above still holds.
 _REPL_READY_MARKERS = ("? for shortcuts", "shift+tab to cycle", "bypass permissions")
 
+# Same idea for the other CLIs, verified against OpenCode 1.18.4 and Codex
+# 0.145.0: each string is persistent chrome that renders only once that TUI
+# accepts input. Codex is the one that needs care — on a container's first
+# launch it opens with a "Do you trust the contents of this directory?" prompt
+# and draws its banner only after that is answered, so gating on the banner also
+# gates on the modal being gone (same reasoning as the Claude footer above).
+_READY_MARKERS = {
+    "claude": _REPL_READY_MARKERS,
+    "opencode": ("tab agents", "ctrl+p commands", "Ask anything"),
+    "codex": ("OpenAI Codex", "/model to change"),
+}
 
-def _repl_ready(pane: Optional[str]) -> bool:
-    return bool(pane) and any(m in pane for m in _REPL_READY_MARKERS)
+
+def _repl_ready(pane: Optional[str], kind: str = "claude") -> bool:
+    markers = _READY_MARKERS.get(kind, _REPL_READY_MARKERS)
+    return bool(pane) and any(m in pane for m in markers)
 
 
 def get_sessions() -> list[dict]:
@@ -171,8 +249,32 @@ def find_session(session_id: str) -> dict:
 
 
 def tmux_inject(tmux_session: str, text: str, send_enter: bool = True):
-    _run_tmux(tmux_session, ["send-keys", "-t", tmux_session, "-l", text])
+    """Type `text` into a session's TUI and submit it.
+
+    Works the same for every agent CLI on the host (Claude Code, OpenCode,
+    Codex), because the two things that used to differ are handled here:
+
+    * **Multi-line text.** `send-keys -l` sends each newline as a bare Return,
+      which OpenCode and Codex read as "submit this line" — a 3-line prompt
+      became 3 separate messages, the 2nd and 3rd landing while the agent was
+      already working. Claude Code survived it only by accident (its paste
+      heuristic coalesces a fast burst). Loading the text into a tmux buffer and
+      pasting it with `-p` (bracketed paste) makes all three TUIs treat the
+      whole thing as one pasted block, newlines included. It also keeps prompt
+      text out of the remote shell command line entirely.
+    * **The submitting Return.** Every one of these TUIs ignores a Return that
+      arrives *inside* the paste burst, so the Enter must be a separate keystroke
+      sent after the burst settles. OpenCode/Codex ignore a Return on an empty
+      composer, so this single delayed Enter is correct everywhere — there is no
+      need to special-case a second one.
+    """
+    # Unique buffer name: concurrent injections into different sessions must not
+    # consume each other's buffer (-d deletes it after pasting).
+    buf = f"ccd{uuid.uuid4().hex[:8]}"
+    _run_tmux(tmux_session, ["load-buffer", "-b", buf, "-"], stdin_text=text)
+    _run_tmux(tmux_session, ["paste-buffer", "-d", "-p", "-b", buf, "-t", tmux_session])
     if send_enter:
+        time.sleep(0.8)
         _run_tmux(tmux_session, ["send-keys", "-t", tmux_session, "Enter"])
 
 
@@ -193,7 +295,21 @@ async def send_prompt(session_id: str, body: dict):
     if not prompt:
         raise HTTPException(400, "Empty prompt")
     tmux_inject(session["tmux_session"], prompt)
-    return {"ok": True}
+    # Probed after the injection so it costs the send no latency. Reported for
+    # the same reason the image route probes: the cheap group guess is wrong for
+    # regrouped or hand-launched sessions, and a wrong answer here would be a
+    # misleading thing to debug against.
+    kind, _ = detect_agent_kind(session)
+    return {"ok": True, "agent": kind}
+
+
+@app.get("/api/sessions/{session_id}/agent")
+def session_agent(session_id: str):
+    """Which CLI is live in this session — pane-probed, so it survives a session
+    being regrouped or having a different agent launched in it by hand."""
+    session = find_session(session_id)
+    kind, source = detect_agent_kind(session)
+    return {"agent": kind, "source": source}
 
 
 @app.post("/api/sessions/{session_id}/image")
@@ -203,7 +319,15 @@ async def send_image(
     prompt: Optional[str] = Form(None),
 ):
     session = find_session(session_id)
-    ext = Path(file.filename).suffix if file.filename else ".png"
+    # Pane-probed: the vision warning below is only right if we know which CLI
+    # (and therefore which model family) is really on the other end.
+    kind, _ = detect_agent_kind(session)
+    # The extension reaches a remote shell via scp's remote argument, so take it
+    # from the (client-controlled) filename only if it's a plain alphanumeric
+    # suffix. "shot.png;id" would otherwise arrive as a command.
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if not re.fullmatch(r"\.[a-z0-9]{1,8}", ext):
+        ext = ".png"
     fname = f"upload-{uuid.uuid4().hex[:8]}{ext}"
     remote_path = f"{session['path']}/{fname}"
 
@@ -215,8 +339,9 @@ async def send_image(
     try:
         if REMOTE_HOST:
             subprocess.run(
-                ["scp", "-q", tmp_path, f"{REMOTE_HOST}:{remote_path}"],
+                ["scp", "-q", tmp_path, f"{REMOTE_HOST}:{shlex.quote(remote_path)}"],
                 check=True,
+                timeout=120,
             )
         else:
             import shutil
@@ -224,12 +349,30 @@ async def send_image(
     finally:
         os.unlink(tmp_path)
 
-    inject = f"~/work/{fname}"
-    if prompt and prompt.strip():
-        inject = f"{prompt.strip()} ~/work/{fname}"
+    # Every spawner mounts the worktree at ~/work inside the container, so the
+    # same path works for Claude Code, OpenCode and Codex. All three read the
+    # image through their own file-read tool when the path appears in the
+    # message, so no CLI-specific attachment syntax is needed (notably: NOT
+    # OpenCode's "@file" mention, whose completion popup would eat the Enter).
+    # The lead-in sentence matters for the non-Claude CLIs — a bare path with no
+    # instruction reads as an ambiguous message.
+    container_path = f"~/work/{fname}"
+    inject = f"{prompt.strip()} {container_path}" if prompt and prompt.strip() \
+        else f"Look at this image: {container_path}"
 
     tmux_inject(session["tmux_session"], inject)
-    return {"ok": True, "path": f"~/work/{fname}"}
+    resp = {"ok": True, "path": container_path, "agent": kind}
+    if kind == "opencode":
+        # OpenCode itself handles the image fine — its read tool returns an image
+        # part, verified against Kimi K2.7 — but whether the image is usable
+        # depends on the session's model. cc-code's default (DeepSeek V4 Pro) is
+        # text-only and just answers "this model doesn't support image input",
+        # while the Go models (kimi-k2.x/k3, minimax-m3, qwen*-plus, grok) accept
+        # images. There is no reliable way to read the live model from here, so
+        # warn rather than block.
+        resp["note"] = ("OpenCode session — image delivered, but only a vision model can read it. "
+                        "DeepSeek (cc-code's default) is text-only; go:kimi2.7 / go:kimi3 / go:m3 are not.")
+    return resp
 
 
 @app.get("/api/github/repos")
@@ -451,12 +594,10 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             f"Then run /grill-me to deeply explore the codebase and produce an "
             f"implementation plan. Do not write any code until the plan is complete."
         )
+        # tmux_inject pastes the multi-line prompt as one bracketed-paste block
+        # and sends the submitting Enter after the burst settles, so no extra
+        # Enter is needed here.
         tmux_inject(tmux_name, initial_prompt)
-        # The multi-line prompt lands as one paste burst; Claude Code's paste
-        # detection swallows tmux_inject's trailing Enter, leaving it unsubmitted.
-        # A second Enter, once the burst settles, submits it.
-        time.sleep(0.8)
-        _run_tmux(tmux_name, ["send-keys", "-t", tmux_name, "Enter"])
 
     finally:
         _SPAWN_SEMAPHORE.release()
