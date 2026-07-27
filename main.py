@@ -154,6 +154,10 @@ _PANE_MARKERS = (
     ("opencode", ("ctrl+p commands", "tab agents")),
     ("claude", ("bypass permissions", "? for shortcuts", "shift+tab to cycle")),
     ("codex", ("OpenAI Codex", "/model to change", "Implement {feature}", "codex mcp add")),
+    # ponytail: unverified against a live Gemini CLI pane — check once a gmd
+    # session exists and tighten. "YOLO mode" is the --yolo footer toggle hint;
+    # "gemini-" matches the model name in the persistent status bar.
+    ("gemini", ("YOLO mode", "gemini-2.5", "gemini-3")),
 )
 
 # Codex's banner scrolls out of the pane once a session has been working for a
@@ -197,6 +201,17 @@ def detect_agent_kind(session: dict) -> tuple[str, str]:
     return agent_kind(session), "group"
 
 
+# Agent CLI launchers available inside a spawned container's shell. Keys are
+# what the UI/API pass as "agent"; values are the command typed into the pane.
+# Adding a new coding agent = one entry here (the UI reads /api/agents).
+_LAUNCHERS = {
+    "claude": "ccd",       # claude --dangerously-skip-permissions
+    "codex": "cxd",        # codex --dangerously-bypass-approvals-and-sandbox
+    "gemini": "gmd",       # gemini --yolo
+    "opencode": "ocd",     # opencode --auto (+ session --agent/--model)
+}
+
+
 # Marker that the Claude Code REPL has finished booting and is idle at the input
 # box: the persistent bottom-bar footer hint, which renders only once the prompt
 # accepts input (it is NOT shown under the pre-input trust/theme modals). We match
@@ -220,6 +235,7 @@ _READY_MARKERS = {
     "claude": _REPL_READY_MARKERS,
     "opencode": ("tab agents", "ctrl+p commands", "Ask anything"),
     "codex": ("OpenAI Codex", "/model to change"),
+    "gemini": ("YOLO mode", "Type your message"),  # ponytail: unverified, see _PANE_MARKERS
 }
 
 
@@ -420,12 +436,21 @@ def github_branches(owner: str, repo: str):
     return branches
 
 
+@app.get("/api/agents")
+def list_agents():
+    """Coding agents the UI can offer for a new session, keyed by kind."""
+    return _LAUNCHERS
+
+
 @app.post("/api/sessions")
-def create_session(body: dict):
+def create_session(body: dict, background_tasks: BackgroundTasks):
     repo = body.get("repo", "").strip()
     branch = body.get("branch", "").strip()
+    agent = (body.get("agent") or "claude").strip().lower()
     if not repo or not branch:
         raise HTTPException(400, "repo and branch required")
+    if agent not in _LAUNCHERS:
+        raise HTTPException(400, f"agent must be one of: {', '.join(_LAUNCHERS)}")
     # repo is either "owner/name" or a bare "name" (cc-spawn prepends its default
     # org for the bare form). Validate before it reaches a shell.
     if not (_REPO_RE.fullmatch(repo) or _REPO_BARE_RE.fullmatch(repo)):
@@ -447,7 +472,31 @@ def create_session(body: dict):
     else:
         cmd = ["tmux", "new-window", spawn_cmd]
     subprocess.Popen(cmd)
-    return {"ok": True}
+    # The session comes up at a plain container shell (see _spawn_and_inject);
+    # launch the chosen agent CLI in it once it registers.
+    background_tasks.add_task(_launch_agent, branch, _LAUNCHERS[agent])
+    return {"ok": True, "agent": agent}
+
+
+def _wait_for_session(branch: str) -> Optional[dict]:
+    """Poll agent-deck until the session spawned for `branch` registers."""
+    time.sleep(15)  # initial wait for cc-spawn to clone and create the worktree
+    for _ in range(33):  # 33 × 5 s + 15 s initial ≈ 3 min max
+        time.sleep(5)
+        for s in get_sessions():
+            if (branch in s.get("title", "") or branch in s.get("path", "")) \
+                    and s.get("tmux_session"):
+                return s
+    return None
+
+
+def _launch_agent(branch: str, launcher: str):
+    session = _wait_for_session(branch)
+    if not session:
+        print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
+              f"{launcher} not launched", flush=True)
+        return
+    tmux_inject(session["tmux_session"], launcher)
 
 
 @secure_router.post("/api/sessions/from-task")
@@ -521,20 +570,7 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
         else:
             subprocess.Popen(["tmux", "new-window", spawn_cmd])
 
-        # Initial wait for cc-spawn to clone and create the worktree.
-        time.sleep(15)
-
-        session = None
-        for _ in range(33):  # 33 × 5 s + 15 s initial ≈ 3 min max
-            time.sleep(5)
-            for s in get_sessions():
-                if (branch in s.get("title", "") or branch in s.get("path", "")) \
-                        and s.get("tmux_session"):
-                    session = s
-                    break
-            if session:
-                break
-
+        session = _wait_for_session(branch)
         if not session:
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch} task_id={task_id}", flush=True)
             return

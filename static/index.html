@@ -453,6 +453,10 @@
         <datalist id="branch-datalist"></datalist>
       </div>
     </div>
+    <div class="field">
+      <label>Agent</label>
+      <select id="new-agent"><option value="claude">claude (ccd)</option></select>
+    </div>
     <div class="modal-actions">
       <button class="cancel-btn" onclick="closeModal()">Cancel</button>
       <button class="send-btn" onclick="createSession()">Spawn</button>
@@ -709,6 +713,7 @@ function clearImage() {
 
 let allRepos = [];
 let selectedRepo = null; // { name, owner, full_name, default_branch }
+let agentsLoaded = false;
 
 async function openModal() {
   document.getElementById('modal-backdrop').classList.add('open');
@@ -723,6 +728,15 @@ async function openModal() {
     try {
       allRepos = await fetch('/api/github/repos').then(r => r.json());
     } catch(e) { /* gh not available, manual input still works */ }
+  }
+
+  if (!agentsLoaded) {
+    try {
+      const agents = await fetch('/api/agents').then(r => r.json());
+      document.getElementById('new-agent').innerHTML = Object.entries(agents)
+        .map(([kind, cmd]) => `<option value="${kind}">${kind} (${cmd})</option>`).join('');
+      agentsLoaded = true;
+    } catch(e) { /* keep the hardcoded claude option */ }
   }
 }
 
@@ -805,7 +819,7 @@ async function createSession() {
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo, branch }),
+      body: JSON.stringify({ repo, branch, agent: document.getElementById('new-agent').value }),
     });
     if (!res.ok) throw new Error(await res.text());
     document.getElementById('modal-backdrop').classList.remove('open');
