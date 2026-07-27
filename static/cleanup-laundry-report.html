@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cleanup-laundry — Branch Report</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    padding: 2rem;
+    line-height: 1.6;
+  }
+
+  .container { max-width: 1140px; margin: 0 auto; }
+
+  /* NAV TABS */
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 2rem;
+    border-bottom: 1px solid #1e293b;
+    padding-bottom: 0;
+  }
+  .tab {
+    padding: 0.55rem 1.1rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #64748b;
+    cursor: pointer;
+    border-radius: 6px 6px 0 0;
+    border: 1px solid transparent;
+    border-bottom: none;
+    user-select: none;
+    margin-bottom: -1px;
+  }
+  .tab.active {
+    background: #131c2e;
+    color: #f1f5f9;
+    border-color: #1e293b;
+    border-bottom-color: #131c2e;
+  }
+  .tab:not(.active):hover { color: #94a3b8; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* HEADER */
+  header { margin-bottom: 2rem; }
+  header h1 { font-size: 1.5rem; font-weight: 700; color: #f8fafc; }
+  header .meta { font-size: 0.82rem; color: #64748b; margin-top: 0.3rem; }
+
+  /* DIVERGENCE CARDS */
+  .divergence { display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }
+  .divergence-card {
+    flex: 1; min-width: 200px; border-radius: 10px;
+    padding: 1.1rem 1.4rem; display: flex; flex-direction: column; gap: 0.25rem;
+  }
+  .divergence-card.ahead { background: #0d2b1a; border: 1px solid #166534; }
+  .divergence-card.behind { background: #0e1e35; border: 1px solid #1e40af; }
+  .divergence-card .label { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
+  .divergence-card .count { font-size: 2.2rem; font-weight: 800; line-height: 1; }
+  .divergence-card.ahead .count { color: #4ade80; }
+  .divergence-card.behind .count { color: #60a5fa; }
+  .divergence-card .desc { font-size: 0.82rem; color: #94a3b8; }
+
+  /* SECTION HEADINGS */
+  section { margin-bottom: 2.5rem; }
+  section h2 {
+    font-size: 0.9rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; margin-bottom: 1rem;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+
+  .badge {
+    font-size: 0.68rem; font-weight: 600; border-radius: 4px;
+    padding: 0.15rem 0.45rem; text-transform: uppercase;
+  }
+  .badge-prod    { background: #166534; color: #bbf7d0; }
+  .badge-staging { background: #1e3a5f; color: #93c5fd; }
+
+  /* TABLES */
+  table { width: 100%; border-collapse: collapse; font-size: 0.855rem; }
+  thead th {
+    text-align: left; padding: 0.55rem 0.9rem;
+    font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid #1e293b;
+  }
+  tbody tr { border-bottom: 1px solid #161f30; transition: background 0.1s; }
+  tbody tr:hover { background: #131c2e; }
+  tbody td { padding: 0.7rem 0.9rem; vertical-align: top; }
+
+  .feat-name { font-weight: 600; color: #f1f5f9; white-space: nowrap; }
+  .feat-summary { color: #94a3b8; }
+
+  code {
+    font-family: "JetBrains Mono","Fira Code",monospace;
+    font-size: 0.78em; background: #1e293b;
+    padding: 0.1em 0.38em; border-radius: 4px; color: #93c5fd;
+  }
+
+  /* STATUS PILLS */
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.72rem; font-weight: 600; border-radius: 20px;
+    padding: 0.18rem 0.6rem; white-space: nowrap;
+  }
+  .pill-done      { background: #0d2b1a; color: #4ade80; border: 1px solid #166534; }
+  .pill-progress  { background: #1c1a0a; color: #fbbf24; border: 1px solid #854d0e; }
+  .pill-warn      { background: #2b1010; color: #f87171; border: 1px solid #7f1d1d; }
+  .pill-idle      { background: #1a1f2e; color: #64748b;  border: 1px solid #334155; }
+  .pill-critical  { background: #3b0f0f; color: #fca5a5; border: 1px solid #991b1b; }
+  .pill-open      { background: #1c1206; color: #fb923c; border: 1px solid #92400e; }
+  .pill-fixed     { background: #0d2b1a; color: #4ade80; border: 1px solid #166534; }
+  .pill-nosession { background: #161e30; color: #60a5fa; border: 1px solid #1e40af; }
+
+  /* BUG CLUSTERS */
+  .cluster {
+    border: 1px solid #1e293b; border-radius: 10px;
+    margin-bottom: 1.2rem; overflow: hidden;
+  }
+  .cluster-header {
+    padding: 0.8rem 1.1rem;
+    display: flex; align-items: center; gap: 0.75rem;
+    background: #131c2e; border-bottom: 1px solid #1e293b;
+  }
+  .cluster-title { font-weight: 700; color: #f1f5f9; font-size: 0.9rem; }
+  .cluster-desc  { font-size: 0.82rem; color: #64748b; margin-left: auto; }
+  .cluster-body  { padding: 0; }
+
+  /* STRATEGY */
+  .phase-list { display: flex; flex-direction: column; gap: 1.2rem; }
+  .phase {
+    border-radius: 10px; border: 1px solid #1e293b;
+    overflow: hidden;
+  }
+  .phase-header {
+    padding: 0.9rem 1.2rem; background: #131c2e;
+    border-bottom: 1px solid #1e293b;
+    display: flex; align-items: center; gap: 0.8rem;
+  }
+  .phase-num {
+    width: 1.8rem; height: 1.8rem; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8rem; font-weight: 800; flex-shrink: 0;
+  }
+  .phase-1 .phase-num { background: #7f1d1d; color: #fca5a5; }
+  .phase-2 .phase-num { background: #1e3a5f; color: #93c5fd; }
+  .phase-3 .phase-num { background: #166534; color: #bbf7d0; }
+  .phase-4 .phase-num { background: #4a1d96; color: #c4b5fd; }
+  .phase-title { font-weight: 700; color: #f1f5f9; font-size: 0.95rem; }
+  .phase-subtitle { font-size: 0.8rem; color: #64748b; margin-left: auto; }
+  .phase-body { padding: 1rem 1.2rem; }
+  .phase-body ul { list-style: none; display: flex; flex-direction: column; gap: 0.55rem; }
+  .phase-body li {
+    display: flex; gap: 0.6rem; align-items: flex-start;
+    font-size: 0.87rem; color: #94a3b8;
+  }
+  .phase-body li::before { content: "→"; color: #475569; flex-shrink: 0; margin-top: 0.05rem; }
+  .phase-body li strong { color: #e2e8f0; }
+
+  /* ACTIONS */
+  .actions { display: flex; flex-direction: column; gap: 0.75rem; }
+  .action-item {
+    display: flex; gap: 1rem; align-items: flex-start;
+    background: #131c2e; border: 1px solid #1e293b;
+    border-radius: 8px; padding: 0.85rem 1.1rem;
+  }
+  .action-item.urgent { border-color: #7f1d1d; background: #1c0f0f; }
+  .action-item.ready  { border-color: #166534; background: #0d1f14; }
+  .action-num {
+    font-size: 1.05rem; font-weight: 800;
+    line-height: 1; min-width: 1.4rem;
+  }
+  .action-item.urgent .action-num { color: #f87171; }
+  .action-item.ready  .action-num { color: #4ade80; }
+  .action-item        .action-num { color: #60a5fa; }
+  .action-body { font-size: 0.87rem; color: #94a3b8; }
+  .action-body strong { color: #f1f5f9; }
+
+  hr { border: none; border-top: 1px solid #1e293b; margin: 2rem 0; }
+  .session-name { font-weight: 600; color: #f1f5f9; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>cleanup-laundry — Status Report</h1>
+    <div class="meta">Generated 2026-06-25 &nbsp;·&nbsp; <code>main</code> vs <code>dev-branch</code> &nbsp;·&nbsp; Project: Cleanup Management System</div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" onclick="showTab('bugs')">🐛 Open Bugs</div>
+    <div class="tab" onclick="showTab('strategy')">🗺️ Sync Strategy</div>
+    <div class="tab" onclick="showTab('branches')">🌿 Branch Divergence</div>
+    <div class="tab" onclick="showTab('sessions')">🖥️ Active Sessions</div>
+  </div>
+
+  <!-- ═══════════════════════ BUGS PAGE ═══════════════════════ -->
+  <div id="page-bugs" class="page active">
+
+    <div class="divergence" style="margin-bottom:1.5rem">
+      <div class="divergence-card" style="background:#2b1010;border-color:#7f1d1d;min-width:160px">
+        <div class="label">Open Bugs</div>
+        <div class="count" style="color:#f87171">14</div>
+        <div class="desc">All High priority</div>
+      </div>
+      <div class="divergence-card" style="background:#0d1f14;border-color:#166534;min-width:160px">
+        <div class="label">Fix exists, not shipped</div>
+        <div class="count" style="color:#4ade80">3</div>
+        <div class="desc">Branch ready, needs PR to main</div>
+      </div>
+      <div class="divergence-card" style="background:#1c1a0a;border-color:#854d0e;min-width:160px">
+        <div class="label">Under investigation</div>
+        <div class="count" style="color:#fbbf24">4</div>
+        <div class="desc">Active session, no fix yet</div>
+      </div>
+      <div class="divergence-card" style="background:#0e1e35;border-color:#1e40af;min-width:160px">
+        <div class="label">No session yet</div>
+        <div class="count" style="color:#60a5fa">7</div>
+        <div class="desc">Nobody working on these</div>
+      </div>
+    </div>
+
+    <!-- CLUSTER 1: SECURITY -->
+    <div class="cluster">
+      <div class="cluster-header">
+        <span style="font-size:1.2rem">🔐</span>
+        <span class="cluster-title">Security Hardening</span>
+        <span class="cluster-desc">Same root cause: auth/RLS gaps from rapid feature development</span>
+      </div>
+      <div class="cluster-body">
+        <table>
+          <thead><tr><th>Bug</th><th>Status</th><th>Branch / Session</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="feat-name">Hardening exec_agent_sql — SQL injection</td>
+              <td><span class="pill pill-critical">🚨 CRITICAL</span></td>
+              <td><span class="pill pill-nosession">no session</span></td>
+              <td class="feat-summary">SQL injection vector in agent SQL executor. No branch, no session. Must fix first.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Fix IDOR em customer-accounts-admin</td>
+              <td><span class="pill pill-open">open</span></td>
+              <td><span class="pill pill-nosession">no session</span></td>
+              <td class="feat-summary">Insecure direct object reference. No branch.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Adicionar auth a 5 endpoints expostos</td>
+              <td><span class="pill pill-open">open</span></td>
+              <td><span class="pill pill-nosession">no session</span></td>
+              <td class="feat-summary">5 unauthenticated endpoints. No branch.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Remover PIN hash dos logs (operator-login)</td>
+              <td><span class="pill pill-open">open</span></td>
+              <td><span class="pill pill-nosession">no session</span></td>
+              <td class="feat-summary">Operator PINs leaking in server logs. No branch.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Adicionar role 'commercial' a APP_ROLES e ROLE_HIERARCHY</td>
+              <td><span class="pill pill-open">open</span></td>
+              <td><span class="pill pill-nosession">no session</span></td>
+              <td class="feat-summary">Role missing from hierarchy → broken permissions. Related to <code>cs_improvements</code> push notif work.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- CLUSTER 2: BILLING / FINANCIAL -->
+    <div class="cluster">
+      <div class="cluster-header">
+        <span style="font-size:1.2rem">💰</span>
+        <span class="cluster-title">Billing / Financial</span>
+        <span class="cluster-desc">Fix exists but not shipped — single PR would close these</span>
+      </div>
+      <div class="cluster-body">
+        <table>
+          <thead><tr><th>Bug</th><th>Status</th><th>Branch / Session</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="feat-name">Faturação - manifesto bug?</td>
+              <td><span class="pill pill-warn">⚠ fix not shipped</span></td>
+              <td><code>fix_rfid_cage_billing_race</code> · session <code>check_invoicing_error</code></td>
+              <td class="feat-summary">RFID cage billing race condition. Fix is written + tested on branch. <strong>No PR to main — bug live in prod.</strong></td>
+            </tr>
+            <tr>
+              <td class="feat-name">Excell - discrepancy</td>
+              <td><span class="pill pill-progress">🔄 investigated</span></td>
+              <td>session <code>check_expedition_client</code></td>
+              <td class="feat-summary">402 pieces with wrong "hotel atual". Concluded: numbers are correct, stock vs. financial report measure different things. May be able to close.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Problema de pesos dos produtos</td>
+              <td><span class="pill pill-progress">🔄 unknown</span></td>
+              <td>container <code>check_weigth_error</code> running — no transcript read</td>
+              <td class="feat-summary">Weight discrepancy issue. Container is active (7 days) but no agentdeck session. Status unknown.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- CLUSTER 3: TICKETS / PORTAL VISIBILITY -->
+    <div class="cluster">
+      <div class="cluster-header">
+        <span style="font-size:1.2rem">🎫</span>
+        <span class="cluster-title">Ticket &amp; Portal Visibility</span>
+        <span class="cluster-desc">Same root cause: RLS scoping + customer portal access model</span>
+      </div>
+      <div class="cluster-body">
+        <table>
+          <thead><tr><th>Bug</th><th>Status</th><th>Branch / Session</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="feat-name">Archived Tickets visibility customer</td>
+              <td><span class="pill pill-done">✓ investigated</span></td>
+              <td>session <code>check_blocked_tickets</code> (concluded)</td>
+              <td class="feat-summary">Renata (Intercontinental) couldn't see ticket responses. Verdict: data issue — all her tickets are archived. Likely can be closed in Fractional.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Client Visibility Bug</td>
+              <td><span class="pill pill-fixed">✓ likely fixed in prod</span></td>
+              <td><code>fix/portal-inventory-visible-owners</code> → merged to <code>main</code></td>
+              <td class="feat-summary"><code>visible_owners</code> scoping fix is in prod (commit <code>572a4dce</code>). Confirm this is the same bug before closing.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Fix permanent operator lockout (sorting-operator-login)</td>
+              <td><span class="pill pill-warn">⚠ possibly fixed</span></td>
+              <td>session <code>cabine_change_states</code> — PR #268 ready to merge</td>
+              <td class="feat-summary">Cabin state machine manages operator state. PR #268 is rebased and ready. Merge it and confirm this closes the lockout.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- CLUSTER 4: STOCK / INVENTORY -->
+    <div class="cluster">
+      <div class="cluster-header">
+        <span style="font-size:1.2rem">📦</span>
+        <span class="cluster-title">Stock &amp; Inventory</span>
+        <span class="cluster-desc">Mix of data integrity + UX bugs, some under active work</span>
+      </div>
+      <div class="cluster-body">
+        <table>
+          <thead><tr><th>Bug</th><th>Status</th><th>Branch / Session</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="feat-name">Troca de roupa</td>
+              <td><span class="pill pill-progress">🔄 in progress</span></td>
+              <td>session <code>add_clothe_togroup</code> (redirected)</td>
+              <td class="feat-summary">Clothing exchange/group assignment issue. Session was redirected mid-task. Needs to resume.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Check logic owner - there's a bug somewhere</td>
+              <td><span class="pill pill-nosession">no session</span></td>
+              <td>—</td>
+              <td class="feat-summary">Vague ownership logic bug. No branch. Possibly related to <code>visible_owners</code> fix already in prod, or to Client Visibility Bug above.</td>
+            </tr>
+            <tr>
+              <td class="feat-name">Toco online duplicação cliente?</td>
+              <td><span class="pill pill-nosession">no session</span></td>
+              <td>—</td>
+              <td class="feat-summary">Client duplication in Toco online. No branch, no session. Needs investigation.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /page-bugs -->
+
+
+  <!-- ═══════════════════════ STRATEGY PAGE ═══════════════════════ -->
+  <div id="page-strategy" class="page">
+
+    <section>
+      <h2>🗺️ Proposed Sync &amp; Fix Strategy</h2>
+      <p style="color:#64748b;font-size:0.87rem;margin-bottom:1.5rem">
+        The core problem: <code>main</code> and <code>dev-branch</code> have diverged so far that merging dev→main will be painful unless done in order. The open bugs cluster into 4 groups, some sharing a root cause.
+      </p>
+    </section>
+
+    <div class="phase-list">
+
+      <div class="phase phase-1">
+        <div class="phase-header">
+          <div class="phase-num">1</div>
+          <div>
+            <div class="phase-title">🚨 Immediate — Security + live prod bugs (this week)</div>
+            <div class="phase-subtitle" style="color:#f87171">Do before any merge or release</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <ul>
+            <li><strong>SQL injection in exec_agent_sql</strong> — open a dedicated security session, fix and PR to main directly. Do not wait for dev-branch sync.</li>
+            <li><strong>IDOR in customer-accounts-admin</strong> — audit the endpoint, add row-level ownership check. Single PR to main.</li>
+            <li><strong>5 unauthenticated endpoints</strong> — list them, add <code>require_auth</code> middleware. PR to main.</li>
+            <li><strong>PIN hash in operator logs</strong> — scrub the log call. 5-minute fix, PR to main.</li>
+            <li><strong>RFID cage billing race</strong> — fix is already on <code>fix_rfid_cage_billing_race</code>. Open the PR to main NOW. This bug is live.</li>
+            <li>These 5 bugs share the same session: open one <code>security-hardening</code> session on cc-host, fix all 4 security bugs in one PR, ship the billing race separately (branch already done).</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase phase-2">
+        <div class="phase-header">
+          <div class="phase-num">2</div>
+          <div>
+            <div class="phase-title">🌿 Sync dev-branch ← main (rebase)</div>
+            <div class="phase-subtitle" style="color:#60a5fa">After security PRs land in main</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <ul>
+            <li><strong>Merge main into dev-branch</strong> — <code>git merge origin/main</code> from dev-branch. The 109 prod commits need to flow into staging before you can safely release the 49 staging commits back to prod.</li>
+            <li>Expect conflicts in <code>supabase/migrations/</code> (timestamp collisions) and possibly in billing/RLS files. Resolve conflicts on a short-lived branch, then fast-forward dev-branch.</li>
+            <li>After merge: run the full E2E suite on staging (<code>dev.cleanup.pt</code>) to confirm the 49 new features still work on top of main.</li>
+            <li>Merge PR #268 (<code>cabine_change_states</code>) to main while you're at it — it's ready and independent of the sync.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase phase-3">
+        <div class="phase-header">
+          <div class="phase-num">3</div>
+          <div>
+            <div class="phase-title">🚀 Release dev-branch → main (staging → prod)</div>
+            <div class="phase-subtitle" style="color:#4ade80">49 commits of features ready to ship</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <ul>
+            <li><strong>Batch the 49 dev-branch commits into a release PR</strong>. Group by risk: migrations first (review each one), then UI, then config.</li>
+            <li>Key features in this release: Stock Renting Dashboard, CSV Export, Configurable Ticket Routing, Edit Expedition Manifests, Group Stock Import, PWA Cache Fix, Reporting Day alignment.</li>
+            <li>Before merging: confirm <code>feat/hotel-portal</code> is included or explicitly deferred. The session is stalled — decide now.</li>
+            <li>After merge to main: tag a release, deploy, monitor Sentry/logs for 24h.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase phase-4">
+        <div class="phase-header">
+          <div class="phase-num">4</div>
+          <div>
+            <div class="phase-title">🧹 Clean up open bugs + zombie sessions</div>
+            <div class="phase-subtitle" style="color:#c4b5fd">Post-release hygiene</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <ul>
+            <li><strong>Confirm Client Visibility Bug is closed</strong> — <code>visible_owners</code> fix is in prod. Verify with Cleanup staff, then close the Fractional task.</li>
+            <li><strong>Confirm Archived Tickets visibility is closed</strong> — investigation concluded it's a data issue, not a bug. Close the task.</li>
+            <li><strong>Operator lockout</strong> — verify PR #268 (<code>cabine_change_states</code>) closes it after merge.</li>
+            <li><strong>Toco online duplicação</strong> — open a new session, investigate dedup logic.</li>
+            <li><strong>Problema de pesos</strong> — read the <code>check_weigth_error</code> container transcript to understand current state.</li>
+            <li><strong>role 'commercial'</strong> — add to <code>APP_ROLES</code> + <code>ROLE_HIERARCHY</code>; combine with <code>cs_improvements</code> push notif session (same domain).</li>
+            <li><strong>Kill zombie containers</strong>: <code>db_change_iventario</code> (superseded), <code>bug_hotel-saidas</code> (Jun 9, unattached), <code>export-metrics</code> (Jun 9, unattached). Discard their branches.</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+
+    <div style="margin-top:2rem;padding:1rem 1.2rem;background:#131c2e;border:1px solid #1e293b;border-radius:8px;font-size:0.87rem;color:#94a3b8">
+      <strong style="color:#f1f5f9">TL;DR order:</strong>
+      Ship security fixes → merge main into dev-branch → release dev-branch to prod → close confirmed bugs → kill zombie sessions.
+      The 4 security bugs + billing race should go out <em>before</em> the big dev-branch merge — they're small, independent, and one is critical.
+    </div>
+
+  </div><!-- /page-strategy -->
+
+
+  <!-- ═══════════════════════ BRANCHES PAGE ═══════════════════════ -->
+  <div id="page-branches" class="page">
+
+    <div class="divergence">
+      <div class="divergence-card ahead">
+        <div class="label">main ahead of dev-branch</div>
+        <div class="count">109</div>
+        <div class="desc">Commits in prod not yet in staging</div>
+      </div>
+      <div class="divergence-card behind">
+        <div class="label">dev-branch ahead of main</div>
+        <div class="count">49</div>
+        <div class="desc">Commits in staging not yet in prod</div>
+      </div>
+    </div>
+
+    <section>
+      <h2>🟢 In PROD <span class="badge badge-prod">main only</span></h2>
+      <table>
+        <thead><tr><th>Feature / Fix</th><th>Summary</th></tr></thead>
+        <tbody>
+          <tr><td class="feat-name">RFID Inventário Cleanup</td><td class="feat-summary">Full RFID gun flow for Cleanup sweeps: Bluetooth SPP, lost-unit reactivation count, <code>sorting_operator</code> allowlist, gun lifecycle DB, prod APK for Sheila</td></tr>
+          <tr><td class="feat-name">Reassign RFID Tag</td><td class="feat-summary">Staff can reassign a tag to a different client/item, with history</td></tr>
+          <tr><td class="feat-name">Edit Manifesto Bug Fix</td><td class="feat-summary">Gate cage/session delete behind edit-manifest capability; enforce delete role check in RPCs</td></tr>
+          <tr><td class="feat-name">Cage Item Count in Expedition</td><td class="feat-summary">Show cage item count above kg (Jessica feedback)</td></tr>
+          <tr><td class="feat-name">Reconciliation Perf Index</td><td class="feat-summary"><code>bucket_items(scanned_at)</code> index + sargable date filter</td></tr>
+          <tr><td class="feat-name">Portal Inventory Scoping</td><td class="feat-summary"><code>visible_owners</code> fix — own-only → visible scoping; hide foreign-owned strays in Entrada</td></tr>
+          <tr><td class="feat-name">Customer Portal Mixes Fix</td><td class="feat-summary">Fix for mixed items showing incorrectly in reconciliation</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>🔵 In STAGING <span class="badge badge-staging">dev-branch only</span></h2>
+      <table>
+        <thead><tr><th>Feature / Fix</th><th>Summary</th></tr></thead>
+        <tbody>
+          <tr><td class="feat-name">Nova Entrada Stepped Flow</td><td class="feat-summary">Multi-step weighing intake: category → cor → método; Cama→Quarto rename</td></tr>
+          <tr><td class="feat-name">Stock Renting Dashboard</td><td class="feat-summary">Per-hotel linen stock dashboard (subcategoria + localização) + ideal config grid + auto-seed</td></tr>
+          <tr><td class="feat-name">Configurable Ticket Routing</td><td class="feat-summary">Workflow builder UI for Laura to configure routing rules (Phases 1–2)</td></tr>
+          <tr><td class="feat-name">CSV Export — All Tables</td><td class="feat-summary">Full CSV export for finance feeds (accounting, billing, treasury) + all data tables</td></tr>
+          <tr><td class="feat-name">Edit Expedition Manifests</td><td class="feat-summary">Edit everything in an already-created manifest (incl. RFID cages)</td></tr>
+          <tr><td class="feat-name">Group Stock Import (RFID)</td><td class="feat-summary">Import RFID linen to a group pool; group owner selector in Nova Peça</td></tr>
+          <tr><td class="feat-name">Ticket Kanban Cap Fix</td><td class="feat-summary">Raise fetch cap 200→1000 (was hiding old open tickets)</td></tr>
+          <tr><td class="feat-name">PWA Cache Fix</td><td class="feat-summary">NetworkFirst nav so refresh picks up new deploys</td></tr>
+          <tr><td class="feat-name">Reporting Day Alignment</td><td class="feat-summary">Operations dashboard uses ship-day (<code>shipped_at</code>) instead of delivery date</td></tr>
+          <tr><td class="feat-name">Inline Ticket Edit</td><td class="feat-summary">Inline edits update detail page instantly (no refetch lag)</td></tr>
+          <tr><td class="feat-name">Note Author Fix</td><td class="feat-summary">Resolve note authors via profiles, not assignable-staff</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+  </div><!-- /page-branches -->
+
+
+  <!-- ═══════════════════════ SESSIONS PAGE ═══════════════════════ -->
+  <div id="page-sessions" class="page">
+    <section>
+      <h2>🖥️ Active Sessions on cc-host</h2>
+      <table>
+        <thead><tr><th>Session</th><th>Branch</th><th>Status</th><th>Summary</th></tr></thead>
+        <tbody>
+          <tr><td class="session-name">bug_reconciliaes</td><td><code>bug_reconciliações</code></td><td><span class="pill pill-idle">idle</span></td><td class="feat-summary">No transcript — started Jun 23, no conversation recorded</td></tr>
+          <tr><td class="session-name">check_blocked_tickets</td><td><code>check_blocked_tickets</code></td><td><span class="pill pill-done">✓ concluded</span></td><td class="feat-summary">Renata's ticket visibility. Data issue, not a bug. Close the Fractional task.</td></tr>
+          <tr><td class="session-name">melhorar_entrada</td><td><code>melhorar_entrada</code></td><td><span class="pill pill-warn">fix not in prod</span></td><td class="feat-summary">Stepped Nova Entrada. PR #283 done but NOT in main.</td></tr>
+          <tr><td class="session-name">issue_281</td><td><code>issue_281</code></td><td><span class="pill pill-progress">🔄 in progress</span></td><td class="feat-summary">Linking "Pedir Correção de Manifesto" tickets to manifests. Analysis done, implementation pending.</td></tr>
+          <tr><td class="session-name">dashboard_stock</td><td><code>dev-branch</code></td><td><span class="pill pill-done">✓ in staging</span></td><td class="feat-summary">Stock dashboard shipped to dev-branch. Not in prod.</td></tr>
+          <tr><td class="session-name">check_expedition_client</td><td><code>check_expedition_client</code></td><td><span class="pill pill-done">✓ concluded</span></td><td class="feat-summary">Stock vs. financial discrepancy. Numbers correct, different metrics. Likely close the task.</td></tr>
+          <tr><td class="session-name">check_invoicing_error</td><td><code>fix_rfid_cage_billing_race</code></td><td><span class="pill pill-critical">🚨 no PR to main</span></td><td class="feat-summary">RFID billing race fix written + tested. <strong>Bug live in prod. Open PR now.</strong></td></tr>
+          <tr><td class="session-name">feat-hotel-portal</td><td><code>feat/hotel-portal</code></td><td><span class="pill pill-idle">stalled</span></td><td class="feat-summary">No real work in session. Decide: include in dev-branch release or defer.</td></tr>
+          <tr><td class="session-name">cabine_change_states</td><td><code>cabine_change_states</code></td><td><span class="pill pill-done">✓ ready to merge</span></td><td class="feat-summary">PR #268 rebased against main. All migrations pass. Merge it.</td></tr>
+          <tr><td class="session-name">db_change_iventario</td><td><code>inventario_db_prod</code></td><td><span class="pill pill-warn">⚠ superseded</span></td><td class="feat-summary">Subset of <code>android_app_connect_db</code>. Kill this branch.</td></tr>
+          <tr><td class="session-name">edit_exhisting_tag</td><td><code>edit_exhisting_tag</code></td><td><span class="pill pill-done">✓ verified</span></td><td class="feat-summary">Confirmed PR #283 is NOT in prod. Needs merge path.</td></tr>
+          <tr><td class="session-name">fix_bug_edit_manifesto</td><td><code>fix_bug_edit_manifesto</code></td><td><span class="pill pill-done">✓ concluded</span></td><td class="feat-summary">Suspicious staging session was a seeded test entry. Not a bug.</td></tr>
+          <tr><td class="session-name">cs_improvements</td><td><code>cs_improvements</code></td><td><span class="pill pill-progress">🔄 in progress</span></td><td class="feat-summary">Web Push notifications for CS. Assessment phase.</td></tr>
+          <tr><td class="session-name">edit_manifestos</td><td><code>hotfix/manifest-migration-reconcile</code></td><td><span class="pill pill-progress">🔄 context compacted</span></td><td class="feat-summary">Edit expedition manifests. Mid-implementation.</td></tr>
+          <tr><td class="session-name">add_clothe_togroup</td><td><code>add_clothe_togroup</code></td><td><span class="pill pill-progress">🔄 redirected</span></td><td class="feat-summary">Was scoping edit manifests. Needs to resume original task (Troca de roupa bug).</td></tr>
+          <tr><td class="session-name">ticket_routing</td><td><code>dev-branch</code></td><td><span class="pill pill-progress">🔄 context compacted</span></td><td class="feat-summary">Configurable ticket routing Phase 1 built and under review.</td></tr>
+          <tr><td class="session-name">compare_lauraasks_with_current</td><td><code>docs/laura-portal-assessment</code></td><td><span class="pill pill-done">✓ concluded</span></td><td class="feat-summary">Laura portal assessment done. hotel-portal needs prod sign-off.</td></tr>
+          <tr><td class="session-name">dashboard_sync</td><td><code>fix/reporting-day-align-delivery-date</code></td><td><span class="pill pill-done">✓ shipped</span></td><td class="feat-summary">Ship-day alignment in prod (PR #184). Stable.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div><!-- /page-sessions -->
+
+</div><!-- /container -->
+
+<script>
+function showTab(id) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + id).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+</body>
+</html>

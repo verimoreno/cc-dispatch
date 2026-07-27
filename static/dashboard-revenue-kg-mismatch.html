@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard Revenue/KG Mismatch — Investigation Report</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f0f10;
+    color: #e8e8e8;
+    line-height: 1.7;
+    padding: 2rem;
+  }
+  .container { max-width: 860px; margin: 0 auto; }
+  header {
+    border-bottom: 1px solid #2a2a2e;
+    padding-bottom: 1.5rem;
+    margin-bottom: 2.5rem;
+  }
+  header .label {
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #6e6e80;
+    margin-bottom: 0.5rem;
+  }
+  h1 { font-size: 1.8rem; font-weight: 700; color: #ffffff; }
+  header .meta { font-size: 0.8rem; color: #6e6e80; margin-top: 0.4rem; }
+  h2 { font-size: 1.1rem; font-weight: 600; color: #ffffff; margin: 2rem 0 0.75rem; }
+  h3 { font-size: 0.95rem; font-weight: 600; color: #c8c8d4; margin: 1.5rem 0 0.5rem; }
+  p { margin-bottom: 1rem; color: #c0c0cc; }
+  ul, ol { padding-left: 1.4rem; margin-bottom: 1rem; }
+  li { margin-bottom: 0.4rem; color: #c0c0cc; }
+  code {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.85em;
+    background: #1e1e24;
+    color: #a78bfa;
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+  }
+  pre {
+    background: #1e1e24;
+    border: 1px solid #2a2a2e;
+    border-radius: 8px;
+    padding: 1.2rem;
+    overflow-x: auto;
+    margin-bottom: 1.2rem;
+  }
+  pre code { background: none; padding: 0; color: #e8e8e8; font-size: 0.85rem; }
+  .card {
+    background: #18181c;
+    border: 1px solid #2a2a2e;
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+  }
+  .card .label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #6e6e80;
+    margin-bottom: 0.35rem;
+  }
+  .card .title { font-size: 1rem; font-weight: 600; color: #ffffff; margin-bottom: 0.4rem; }
+  .card .body { font-size: 0.875rem; color: #9090a0; }
+  .card .footer {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #2a2a2e;
+    font-size: 0.8rem;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.2em 0.65em;
+    border-radius: 99px;
+    margin-right: 0.35rem;
+  }
+  .badge-confirmed { background: #0d2b1a; color: #4ade80; border: 1px solid #1a4d2e; }
+  .badge-partial   { background: #2b1d00; color: #fb923c; border: 1px solid #5c3800; }
+  .badge-bug       { background: #2b0d1a; color: #f87171; border: 1px solid #5c1a2e; }
+  .badge-info      { background: #1a1a2e; color: #818cf8; border: 1px solid #2e2e5c; }
+  .badge-warn      { background: #2b2800; color: #facc15; border: 1px solid #5c5200; }
+  .badge-go        { background: #0d2b1a; color: #4ade80; border: 1px solid #1a4d2e; }
+  .section { margin-bottom: 2.5rem; }
+  blockquote {
+    border-left: 3px solid #a78bfa;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    color: #9090a0;
+    font-style: italic;
+    background: #13131a;
+    border-radius: 0 8px 8px 0;
+  }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 1.2rem; font-size: 0.875rem; }
+  th {
+    text-align: left;
+    padding: 0.6rem 1rem;
+    background: #1a1a20;
+    color: #9090a0;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border-bottom: 1px solid #2a2a2e;
+  }
+  td { padding: 0.75rem 1rem; border-bottom: 1px solid #1e1e24; color: #c0c0cc; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .highlight-row td { background: #1a1a28; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+  .kpi {
+    background: #18181c;
+    border: 1px solid #2a2a2e;
+    border-radius: 10px;
+    padding: 1.25rem;
+    text-align: center;
+  }
+  .kpi .val { font-size: 1.8rem; font-weight: 700; color: #fff; margin-bottom: 0.2rem; }
+  .kpi .lbl { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: #6e6e80; }
+  .kpi.bad .val { color: #f87171; }
+  .kpi.ok .val  { color: #4ade80; }
+  .timeline { position: relative; padding-left: 1.5rem; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.5rem;
+    bottom: 0.5rem;
+    width: 2px;
+    background: #2a2a2e;
+  }
+  .tl-item { position: relative; margin-bottom: 1.5rem; }
+  .tl-item::before {
+    content: '';
+    position: absolute;
+    left: -1.5rem;
+    top: 0.5rem;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #3a3a4e;
+    border: 2px solid #5a5a7e;
+  }
+  .tl-item.bad::before { background: #5c1a1a; border-color: #f87171; }
+  .tl-item.good::before { background: #0d2b1a; border-color: #4ade80; }
+  .tl-item.warn::before { background: #2b2800; border-color: #facc15; }
+  .tl-date { font-size: 0.72rem; color: #6e6e80; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.2rem; }
+  .tl-title { font-weight: 600; color: #fff; margin-bottom: 0.25rem; }
+  .tl-body { font-size: 0.875rem; color: #9090a0; }
+  .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.2rem; }
+  .diff-cell {
+    background: #18181c;
+    border: 1px solid #2a2a2e;
+    border-radius: 10px;
+    padding: 1.25rem;
+  }
+  .diff-cell.bad { border-color: #5c1a1a; }
+  .diff-cell.good { border-color: #1a4d2e; }
+  .diff-cell .hd { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.75rem; }
+  .diff-cell.bad .hd { color: #f87171; }
+  .diff-cell.good .hd { color: #4ade80; }
+  .diff-cell .item { font-size: 0.875rem; color: #c0c0cc; margin-bottom: 0.4rem; }
+  .diff-cell .item span { color: #6e6e80; }
+  .step-list { counter-reset: steps; }
+  .step { counter-increment: steps; display: flex; gap: 1rem; margin-bottom: 1rem; align-items: flex-start; }
+  .step-num {
+    flex-shrink: 0;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    background: #1e1e2e;
+    border: 1px solid #3a3a5c;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #a78bfa;
+  }
+  .step-body .title { font-weight: 600; color: #fff; margin-bottom: 0.2rem; }
+  .step-body .desc { font-size: 0.875rem; color: #9090a0; }
+  .alert {
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.2rem;
+    font-size: 0.9rem;
+  }
+  .alert-warn { background: #1e1a00; border: 1px solid #5c4a00; color: #facc15; }
+  .alert-info { background: #0f0f1e; border: 1px solid #2e2e5c; color: #818cf8; }
+  .alert-danger { background: #1e0a0a; border: 1px solid #5c1a1a; color: #f87171; }
+  .alert-success { background: #091a0f; border: 1px solid #1a4d2e; color: #4ade80; }
+  .sep { border: none; border-top: 1px solid #2a2a2e; margin: 2rem 0; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <div class="label">Cleanup Laundry · Dashboard Operações · 2 Jul 2026</div>
+  <h1>Revenue / KG Mismatch — Investigation Report</h1>
+  <div class="meta">Investigado por Claude Code + 4 QA agents independentes · Pronto para decisão</div>
+</header>
+
+<!-- ─── COMPLAINT ─── -->
+<div class="section">
+  <h2>O que a Rita reportou</h2>
+  <blockquote>
+    "é impossivel termos kgs expedidos no dia 2 e que isso nao tenha faturação associada"
+  </blockquote>
+  <p>Rita viu no Dashboard Operações o seguinte para o período 01/07 – 02/07:</p>
+  <div class="kpi-grid">
+    <div class="kpi"><div class="val">14 843 kg</div><div class="lbl">Entradas</div></div>
+    <div class="kpi bad"><div class="val">12 061 kg</div><div class="lbl">Saídas</div></div>
+    <div class="kpi bad"><div class="val">€ 8 087</div><div class="lbl">Faturação out</div></div>
+  </div>
+  <p>O dia 1 mostrava expedição com faturação associada. O dia 2 mostrava <strong>2 979 kg expedidos mas faturação quase nula</strong>. Ela tinha razão — não é só um rácio baixo, é um erro estrutural.</p>
+</div>
+
+<hr class="sep">
+
+<!-- ─── ROOT CAUSE ─── -->
+<div class="section">
+  <h2>Causa raiz confirmada</h2>
+
+  <div class="alert alert-danger">
+    <strong>Bug:</strong> O gráfico de KG usa o dia em que a encomenda saiu (<em>ship-day</em>). O gráfico de faturação usa o dia em que entrou na lavandaria (<em>delivery_date</em>). São dias diferentes — logo o dashboard compara laranjas com maçãs.
+  </div>
+
+  <div class="diff-grid">
+    <div class="diff-cell">
+      <div class="hd">📦 KG Saídas (operations_daily_flow_kg)</div>
+      <div class="item">Usa: <code>expedition_operational_day(es.closed_at)</code></div>
+      <div class="item"><span>Significado:</span> dia em que a expedição foi <strong>fechada e saiu</strong> da lavandaria</div>
+      <div class="item"><span>Exemplo:</span> carrinha parte às 8h de 2 jul → conta em 2 jul</div>
+    </div>
+    <div class="diff-cell bad">
+      <div class="hd">💶 Faturação (operations_revenue_daily_billing_aligned)</div>
+      <div class="item">Usa: <code>dr.delivery_date</code></div>
+      <div class="item"><span>Significado:</span> dia em que a roupa <strong>entrou / foi pesada</strong> na lavandaria</div>
+      <div class="item"><span>Exemplo:</span> roupa pesada em 1 jul → conta em 1 jul, mesmo saindo em 2 jul</div>
+    </div>
+  </div>
+
+  <p>Num ciclo normal, a roupa entra 1 dia e sai no dia seguinte. Por isso <strong>KG dia 2 = receita dia 1</strong> — e o dashboard aparece com dia 2 cheio de kg e sem faturação.</p>
+</div>
+
+<hr class="sep">
+
+<!-- ─── DATA PROOF ─── -->
+<div class="section">
+  <h2>Prova nos dados (2 Jul 2026)</h2>
+  <p>Query executada na produção:</p>
+  <pre><code>SELECT expedition_operational_day(es.closed_at) AS ship_day,
+       cdr.delivery_date,
+       (expedition_operational_day(es.closed_at) - cdr.delivery_date) AS lag_days,
+       COUNT(DISTINCT cdr.id) AS cages,
+       SUM(cdr.weight_kg) AS kg
+FROM expedition_sessions es
+JOIN client_delivery_records cdr ON cdr.expedition_session_id = es.id
+WHERE expedition_operational_day(es.closed_at) = '2026-07-02'
+GROUP BY 1, 2, 3;</code></pre>
+
+  <table>
+    <thead>
+      <tr><th>Ship Day</th><th>Delivery Date</th><th>Lag (dias)</th><th>Carrinhos</th><th>KG</th></tr>
+    </thead>
+    <tbody>
+      <tr class="highlight-row">
+        <td>2026-07-02</td>
+        <td>2026-07-01</td>
+        <td><strong style="color:#f87171">+1 dia</strong></td>
+        <td>44 / 44 (100%)</td>
+        <td>2 979,2 kg</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p><strong>Todos os 44 carrinhos</strong> expedidos a 2 jul foram pesados/registados a 1 jul. A função de faturação mostra a receita deles em 1 jul. A função de KG mostra-os em 2 jul. Resultado: 2 979 kg sem faturação no dia 2.</p>
+
+  <p>O desfasamento é estrutural, não pontual — aparece também no dia 1 (67 em 146 carrinhos têm lag de 1 dia, os restantes 79 são do mesmo dia).</p>
+</div>
+
+<hr class="sep">
+
+<!-- ─── TIMELINE ─── -->
+<div class="section">
+  <h2>Linha do tempo — como chegámos aqui</h2>
+  <div class="timeline">
+    <div class="tl-item">
+      <div class="tl-date">Antes de 12 Jun 2026</div>
+      <div class="tl-title">Estado original — ambas as funções usavam delivery_date</div>
+      <div class="tl-body">KG e faturação alinhados no mesmo dia (o de entrada). A Rita reclamou que o KG não correspondia ao dia real de expedição.</div>
+    </div>
+    <div class="tl-item good">
+      <div class="tl-date">12 Jun 2026 — migration 20260612150000 + 20260612161000</div>
+      <div class="tl-title">Migração correcta aplicada — ambas trocam para ship-day</div>
+      <div class="tl-body">KG e faturação passam a usar <code>expedition_operational_day(closed_at)</code>. Dashboard alinhado. Mas os números diários "mudaram" face ao que se estava habituado.</div>
+    </div>
+    <div class="tl-item warn">
+      <div class="tl-date">15 Jun 2026 — migration 20260615174039 aplicada DIRECTAMENTE em produção</div>
+      <div class="tl-title">Revert fora do git — só a faturação voltou a delivery_date</div>
+      <div class="tl-body">Alguém aplicou <code>revert_financial_views_to_delivery_date</code> directamente no Supabase, sem ficheiro no repositório. O KG ficou em ship-day. A faturação voltou a delivery_date. <strong>Criou o bug actual.</strong></div>
+    </div>
+    <div class="tl-item bad">
+      <div class="tl-date">2 Jul 2026 — hoje</div>
+      <div class="tl-title">Dashboard partido — KG ship-day, faturação delivery_date</div>
+      <div class="tl-body">2 979 kg aparecem no dia 2 sem receita. A Rita vê isso como "impossível" — e tem razão.</div>
+    </div>
+  </div>
+</div>
+
+<hr class="sep">
+
+<!-- ─── QA RESULTS ─── -->
+<div class="section">
+  <h2>Verificação independente — 4 QA agents</h2>
+
+  <div class="card">
+    <div class="label">QA Agent 1</div>
+    <div class="title">Mismatch das funções de data</div>
+    <span class="badge badge-confirmed">CONFIRMADO</span>
+    <div class="body">
+      <code>operations_revenue_daily_billing_aligned</code>: abre o CTE com <code>SELECT dr.delivery_date AS day</code> e filtra <code>WHERE dr.delivery_date BETWEEN ...</code><br><br>
+      <code>operations_daily_flow_kg</code>: usa <code>SELECT expedition_operational_day(es.closed_at) AS d</code> com JOIN em <code>expedition_sessions</code>.<br><br>
+      São estruturalmente diferentes. Sempre que um carrinho entra e sai em dias distintos, os valores ficam atribuídos a dias distintos.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">QA Agent 2</div>
+    <div class="title">Estado das migrações em produção</div>
+    <span class="badge badge-partial">PARCIAL — com descoberta importante</span>
+    <div class="body">
+      A migração ship-day (<code>20260612161000</code>) <strong>foi aplicada</strong> — existe em <code>schema_migrations</code>.<br><br>
+      Mas uma migração posterior (<code>20260615174039_revert_financial_views_to_delivery_date</code>) foi aplicada <strong>directamente em produção, fora do git</strong>. Não existe ficheiro correspondente no repositório. Isso criou um divergência silenciosa: produção tem um estado que o código não reflecte.
+    </div>
+    <div class="footer" style="color:#facc15">
+      ⚠️ O ficheiro de revert não existe em nenhum lugar do repositório local. Risco: futuras migrações ou resets podem apagar-no sem aviso.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">QA Agent 3</div>
+    <div class="title">Confirmação nos dados — lag de 1 dia</div>
+    <span class="badge badge-confirmed">CONFIRMADO</span>
+    <div class="body">
+      44/44 carrinhos expedidos a 2 jul têm <code>delivery_date = 2026-07-01</code>. Zero variação.<br><br>
+      Padrão confirmado também em 1 jul: 67 de 146 carrinhos (46%) têm lag de 1 dia para 30 jun; os restantes 79 são do mesmo dia. O desfasamento é recorrente mas não universal — varia por cliente e sessão.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">QA Agent 4</div>
+    <div class="title">Âmbito do fix — motor de faturação intocado</div>
+    <span class="badge badge-confirmed">CONFIRMADO</span>
+    <div class="body">
+      A migração <code>20260612161000</code> redefine <em>apenas</em> <code>operations_revenue_daily_billing_aligned</code>. Não altera tabelas, não toca em <code>generate_billing_preview</code>.<br><br>
+      <code>generate_billing_preview</code> (o motor de faturas) usa <code>delivery_date</code> internamente — e isso é correcto e intencional. Fica completamente inalterado.
+    </div>
+    <div class="footer" style="color:#4ade80">
+      ✓ Fix é display-only. Faturas, billing preview e exportações não são afectados.
+    </div>
+  </div>
+</div>
+
+<hr class="sep">
+
+<!-- ─── IMPACT ─── -->
+<div class="section">
+  <h2>O que muda no dashboard se aplicarmos o fix</h2>
+
+  <table>
+    <thead>
+      <tr><th>Situação</th><th>KG dia 2</th><th>Faturação dia 2</th><th>Consistente?</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Agora (bug)</td>
+        <td>2 979 kg ✓</td>
+        <td>≈ €0 (receita dos carrinhos de 2 jul vai para dia 1)</td>
+        <td style="color:#f87171">❌ Não</td>
+      </tr>
+      <tr class="highlight-row">
+        <td>Após fix</td>
+        <td>2 979 kg ✓</td>
+        <td>≈ €2 361+ (mesmos carrinhos, mesmo dia)</td>
+        <td style="color:#4ade80">✅ Sim</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="alert alert-info">
+    <strong>Totais semanais/mensais ficam iguais.</strong> Só muda a atribuição por dia. Um período de 7 dias mostra sempre a mesma soma — os valores apenas "deslocam" 1 dia para alinhar com o que saiu nesse dia.
+  </div>
+
+  <p>A faturação calculada nas <strong>faturas reais</strong> (<code>generate_billing_preview</code> → Finance → PDF) usa sempre <code>delivery_date</code> e <strong>não é alterada</strong>. Rodrigo pode continuar a emitir faturas normalmente.</p>
+</div>
+
+<hr class="sep">
+
+<!-- ─── WHY REVERTED ─── -->
+<div class="section">
+  <h2>Porquê foi revertido em 15 Jun?</h2>
+  <p>Provavelmente porque quando ambas as funções mudaram para ship-day, <strong>os números diários no dashboard mudaram</strong> face ao que se via antes. Quem estava habituado a ver receita no "dia de entrada" viu uma discrepância e interpretou como erro.</p>
+  <p>Mas o fix <em>estava correcto</em>. Ao reverter apenas a faturação (sem reverter o KG), criou-se um estado pior: KG e receita passaram a descrever sets de carrinhos completamente diferentes.</p>
+</div>
+
+<hr class="sep">
+
+<!-- ─── RECOMMENDATION ─── -->
+<div class="section">
+  <h2>Recomendação</h2>
+
+  <div class="alert alert-success">
+    <strong>GO — Re-aplicar ship-day na função de faturação do dashboard.</strong> O fix é tecnicamente seguro, confirmado por 4 QA agents independentes. O motor de faturas não é afectado.
+  </div>
+
+  <h3>Dois passos obrigatórios</h3>
+  <div class="step-list">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <div class="title">Criar o ficheiro do revert no git</div>
+        <div class="desc">A migração <code>20260615174039_revert_financial_views_to_delivery_date</code> existe em produção mas não existe em ficheiro. Criar o ficheiro correspondente para que o repositório reflicta o histórico real. Sem isto, o próximo <code>supabase db push</code> pode criar inconsistências silenciosas.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <div class="title">Aplicar nova migração ship-day para revenue</div>
+        <div class="desc">Criar <code>20260702XXXXXX_revenue_dashboard_ship_day_reapply.sql</code> com o conteúdo correcto (igual ao <code>20260612161000</code>) e aplicar em produção. Não re-usar a migração antiga — criar uma nova com timestamp de hoje para manter o histórico limpo.</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Antes de aplicar — comunicar à Rita</h3>
+  <div class="card">
+    <div class="label">Mensagem sugerida para a Rita</div>
+    <div class="body" style="font-style:italic; color:#c0c0cc;">
+      "Rita, encontrámos a causa do dashboard inconsistente. A função de KG mostrava o dia de expedição, mas a de faturação mostrava o dia de entrada — dias diferentes. Vamos corrigir para ambas usarem o dia de expedição. Os totais semanais e mensais ficam iguais — apenas a atribuição por dia muda. Faz sentido?"
+    </div>
+  </div>
+
+  <h3>O que não é preciso tocar</h3>
+  <ul>
+    <li><code>generate_billing_preview</code> — inalterado, continua a usar delivery_date para as faturas</li>
+    <li>Tabelas de dados — nenhuma alteração de schema</li>
+    <li>Motor de expedições, operações, tickets — completamente fora do âmbito</li>
+    <li>Rodrigo / Finance — zero impacto em faturas emitidas ou a emitir</li>
+  </ul>
+</div>
+
+<hr class="sep">
+
+<!-- ─── DECISION BLOCK ─── -->
+<div class="section">
+  <h2>Resumo para decisão</h2>
+  <table>
+    <thead>
+      <tr><th>Pergunta</th><th>Resposta</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>A Rita tinha razão?</td><td style="color:#4ade80">✅ Sim. O bug é real e estrutural.</td></tr>
+      <tr><td>O fix é seguro?</td><td style="color:#4ade80">✅ Confirmado por 4 QA agents. Display-only.</td></tr>
+      <tr><td>As faturas são afectadas?</td><td style="color:#4ade80">❌ Não. generate_billing_preview inalterado.</td></tr>
+      <tr><td>Os totais mensais mudam?</td><td style="color:#4ade80">❌ Não. Só distribui por dia diferente.</td></tr>
+      <tr><td>Há risco no git?</td><td style="color:#facc15">⚠️ Sim. Há uma migração em prod sem ficheiro no repo. Deve ser criada antes de qualquer db push futuro.</td></tr>
+      <tr><td>Porquê foi revertido em Jun?</td><td>Os números mudaram no dashboard e pareceu "errado". Foi interpretado como bug mas era o comportamento correcto.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+</div>
+</body>
+</html>
