@@ -294,9 +294,23 @@ def tmux_inject(tmux_session: str, text: str, send_enter: bool = True):
         _run_tmux(tmux_session, ["send-keys", "-t", tmux_session, "Enter"])
 
 
+# Agent picked in the UI for picker-spawned sessions, keyed by branch. Needed
+# because the picker always spawns via cc-spawn (group "work"), so the group
+# guess says "claude" no matter what was picked. In-memory only — after a
+# restart the badge falls back to the group guess until pane detection corrects
+# the selected session.
+_PICKED_AGENTS: dict[str, str] = {}
+
+
 @app.get("/api/sessions")
 def list_sessions():
-    return get_sessions()
+    sessions = get_sessions()
+    for s in sessions:
+        for branch, agent in _PICKED_AGENTS.items():
+            if branch in s.get("title", "") or branch in s.get("path", ""):
+                s["agent_hint"] = agent
+                break
+    return sessions
 
 
 @app.get("/api/host")
@@ -474,6 +488,7 @@ def create_session(body: dict, background_tasks: BackgroundTasks):
     subprocess.Popen(cmd)
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
+    _PICKED_AGENTS[branch] = agent
     background_tasks.add_task(_launch_agent, branch, agent)
     return {"ok": True, "agent": agent}
 
@@ -523,6 +538,13 @@ def _start_agent_cli(tmux_name: str, launcher: str, kind: str) -> bool:
         if _repl_ready(pane, kind):
             time.sleep(1)  # let the input box finish painting before any paste
             return True
+        # Codex parks its composer behind an "Update available!" modal whenever
+        # a new release ships (recurs every release — 0.146.0 was the first hit).
+        # Answer "2. Skip": each session is a fresh container, so updating here
+        # only slows the launch and the image update is where upgrades belong.
+        if pane and "Update available" in pane and "Skip" in pane:
+            _run_tmux(tmux_name, ["send-keys", "-t", tmux_name, "2", "Enter"])
+            continue
         if sends >= 4 or time.monotonic() - last_send < 30:
             continue
         if not (pane and pane.strip()) or _shell_idle(pane):

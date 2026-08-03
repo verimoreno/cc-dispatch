@@ -498,6 +498,7 @@ const GROUP_KINDS = { work: 'claude', arch: 'opencode', code: 'opencode', codex:
 // confidently wrong badge is worse than none. The selected session gets the
 // truth from /agent, which reads the live pane.
 function agentKind(s) {
+  if (s.agent_hint) return s.agent_hint;
   const g = (s.group || '').trim().toLowerCase();
   if (GROUP_KINDS[g]) return GROUP_KINDS[g];
   const t = (s.title || '').trim().toLowerCase();
