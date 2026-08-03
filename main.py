@@ -474,7 +474,7 @@ def create_session(body: dict, background_tasks: BackgroundTasks):
     subprocess.Popen(cmd)
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
-    background_tasks.add_task(_launch_agent, branch, _LAUNCHERS[agent])
+    background_tasks.add_task(_launch_agent, branch, agent)
     return {"ok": True, "agent": agent}
 
 
@@ -490,13 +490,57 @@ def _wait_for_session(branch: str) -> Optional[dict]:
     return None
 
 
-def _launch_agent(branch: str, launcher: str):
+def _shell_idle(pane: str) -> bool:
+    """True when the pane's last non-empty line is a shell waiting at its
+    prompt — the one state where (re-)typing the launcher is always safe."""
+    lines = [l.rstrip() for l in pane.splitlines() if l.strip()]
+    return bool(lines) and lines[-1].endswith(("$", "#"))
+
+
+def _start_agent_cli(tmux_name: str, launcher: str, kind: str) -> bool:
+    """Type `launcher` into the session's shell and wait for its TUI to be idle
+    at the input box. Returns False on timeout (caller decides whether any
+    follow-up injection proceeds best-effort).
+
+    The launcher gets re-sent (min 30 s apart, 4 sends total) in exactly two
+    states where a keystroke can't be eaten as a TUI's first prompt:
+    * the pane is still blank — the first send raced the container shell
+      coming up and was lost;
+    * the pane is back at an idle shell prompt — the CLI exited under us.
+      This is Codex's normal first launch in a fresh container: it self-updates
+      via npm, prints "Please restart Codex." and quits, so someone must run it
+      again.
+    A pane with output but no shell prompt means something is mid-boot — leave
+    it alone. Bound on wall-clock via a monotonic deadline — a plain iteration
+    count would balloon because each _capture_pane can take up to 10 s.
+    """
+    sends = 1
+    tmux_inject(tmux_name, launcher)
+    start = last_send = time.monotonic()
+    while time.monotonic() < start + 240:
+        time.sleep(5)
+        pane = _capture_pane(tmux_name)
+        if _repl_ready(pane, kind):
+            time.sleep(1)  # let the input box finish painting before any paste
+            return True
+        if sends >= 4 or time.monotonic() - last_send < 30:
+            continue
+        if not (pane and pane.strip()) or _shell_idle(pane):
+            tmux_inject(tmux_name, launcher)
+            sends += 1
+            last_send = time.monotonic()
+    return False
+
+
+def _launch_agent(branch: str, agent: str):
     session = _wait_for_session(branch)
     if not session:
         print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
-              f"{launcher} not launched", flush=True)
+              f"{agent} not launched", flush=True)
         return
-    tmux_inject(session["tmux_session"], launcher)
+    if not _start_agent_cli(session["tmux_session"], _LAUNCHERS[agent], agent):
+        print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
+              f"branch={branch}", flush=True)
 
 
 @secure_router.post("/api/sessions/from-task")
@@ -581,38 +625,10 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
         # ccd would only ever run in the host scratch window, never in this
         # session. Launch Claude Code here, in the session's own terminal.
         tmux_name = session["tmux_session"]
-        tmux_inject(tmux_name, "ccd")
-
-        # Then wait for the REPL to be ready before injecting. Capture goes
-        # through _capture_pane so it targets the remote host in remote mode.
-        # Bound on wall-clock via a monotonic deadline — a plain iteration count
-        # would balloon because each _capture_pane can itself take up to its 10 s
-        # timeout. If the REPL never reports ready we still fall through and
-        # inject (best-effort — the footer marker may lag or the string may
-        # drift), but log a WARN so silent drops are diagnosable.
-        # Any sign the TUI has started — used only to decide whether re-sending
-        # `ccd` is safe, so a slow-but-booting REPL never eats a stray keystroke
-        # as its first prompt.
-        started_markers = _REPL_READY_MARKERS + ("Welcome to Claude Code", "╭", "╰")
-        ready = False
-        relaunched = False
-        start = time.monotonic()
-        deadline = start + 150
-        while time.monotonic() < deadline:
-            time.sleep(5)
-            pane = _capture_pane(tmux_name)
-            if _repl_ready(pane):
-                ready = True
-                break
-            # The `ccd` keystroke can race the container shell coming up. If
-            # nothing has started ~45 s in, re-send it once.
-            if not relaunched and time.monotonic() - start > 45 \
-                    and not (pane and any(m in pane for m in started_markers)):
-                tmux_inject(tmux_name, "ccd")
-                relaunched = True
-        if ready:
-            time.sleep(1)  # let the input box finish painting before the burst
-        else:
+        # If the REPL never reports ready we still fall through and inject
+        # (best-effort — the footer marker may lag or the string may drift),
+        # but log a WARN so silent drops are diagnosable.
+        if not _start_agent_cli(tmux_name, "ccd", "claude"):
             print(f"WARN: cc-dispatch REPL not confirmed ready after 150s; "
                   f"injecting anyway branch={branch} task_id={task_id}", flush=True)
 
