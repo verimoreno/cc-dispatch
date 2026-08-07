@@ -9,12 +9,20 @@ and it comes back on its own after a reboot.
 
 - **Runs on the host, in LOCAL mode** (`CC_DISPATCH_HOST=` empty in `.env`), so it
   drives the host's own `tmux` / `agent-deck` directly — no SSH loopback.
-- **Bound to the host's Tailscale IP** (`CC_DISPATCH_BIND`), so the dashboard is
-  reachable only over the private tailnet, never the public internet. That
-  tailnet boundary is the security model — the browsing endpoints are not
-  token-gated, so do **not** bind this to `0.0.0.0` on a public interface.
-- **systemd `Restart=always` + enabled at boot**, so a crash or reboot doesn't
-  silently take dispatch offline.
+- **Bound to the host's Tailscale IP** (`CC_DISPATCH_BIND=auto`, resolved fresh at
+  each start), so the dashboard is reachable only over the private tailnet, never
+  the public internet. That tailnet boundary **is** the security model: **all** UI
+  endpoints — including session **spawn** (`POST /api/sessions`) and prompt
+  **injection** (`POST /api/sessions/{id}/prompt`), not just read-only browsing —
+  are unauthenticated; only the Supabase `from-task` webhook is token-gated. So
+  never bind this to `0.0.0.0` or a public interface.
+- **systemd `Restart=always`, `StartLimitIntervalSec=0`, enabled at boot, with an
+  `ExecStartPre` that waits for the Tailscale IP** — so a crash or reboot doesn't
+  silently take dispatch offline, and it recovers on its own even through the
+  window before tailscale is up.
+
+> Note: `cc-host-hel` is the Tailscale/MagicDNS name of the same box the skills
+> SSH to via the `cc-host` alias — one host, two names.
 
 ## One-time install (run ON cc-host, over SSH/Tailscale)
 
