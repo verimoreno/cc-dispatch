@@ -51,14 +51,33 @@ ssh cc-host 'agent-deck ls --json'
 
 ### 2. Spawn
 
+Always run the spawn in the **`cc-dispatch-spawns` holding session**, never a
+bare `tmux new-window` (see "Never bare new-window" below — it silently lands the
+window inside one of Veri's live agent sessions):
+
 ```bash
 # owner/name form — pass a full git URL so cc-spawn doesn't prepend its default org:
-ssh cc-host 'tmux new-window "cc-spawn git@github.com:OWNER/NAME.git BRANCH"'
+ssh cc-host 'tmux new-session -d -s cc-dispatch-spawns 2>/dev/null; \
+  tmux new-window -d -P -F "#{window_id}" -t cc-dispatch-spawns: \
+    "cc-spawn git@github.com:OWNER/NAME.git BRANCH"'
 # bare-name form (default org):
-ssh cc-host 'tmux new-window "cc-spawn NAME BRANCH"'
+ssh cc-host 'tmux new-session -d -s cc-dispatch-spawns 2>/dev/null; \
+  tmux new-window -d -P -F "#{window_id}" -t cc-dispatch-spawns: "cc-spawn NAME BRANCH"'
 ```
-`tmux new-window` detaches it so the SSH command returns immediately; cc-spawn
-clones/creates the worktree and brings up the container in that background window.
+`-d` detaches it so the SSH command returns immediately and no attached client
+gets its view yanked; cc-spawn clones/creates the worktree and brings up the
+container in that background window. `-P -F '#{window_id}'` prints the window id
+(e.g. `@42`) — **record it as `$WID`**, you need it to clean up in step 7. The
+`new-session` is create-or-noop: it exits 1 with "duplicate session" once the
+holding session exists, which is the normal steady state.
+
+> **Never bare `new-window`.** `tmux new-window` with no `-t` targets the tmux
+> server's *current* session, and over SSH (no `$TMUX`) that resolves to whichever
+> session was attached most recently — i.e. one of Veri's live agents, at random.
+> Because cc-spawn ends by exec-ing `agent-deck session attach`, the window never
+> exits: it lingers inside that unrelated session as a nested view of the new one,
+> wearing the new session's title. Two sessions then look like one and keystrokes
+> land in the wrong agent. This bit us on 2026-08-10 (4 strays accumulated).
 
 ### 3. Wait for the session to register
 
@@ -71,8 +90,9 @@ single host-side loop over one SSH connection rather than one SSH per tick:
 ```bash
 ssh cc-host 'for i in $(seq 1 24); do agent-deck ls --json | grep -q "BRANCH" && break; sleep 5; done; ...'
 ``` If it never appears, the spawn died: capture
-the scratch window's pane (`ssh cc-host 'tmux capture-pane -p -t <last window>'`)
-for the error, check the 63-char budget, and report — do not blind-retry.
+the scratch window's pane (`ssh cc-host 'tmux capture-pane -p -t $WID'`) for the
+error, check the 63-char budget, and report — do not blind-retry. Leave `$WID`
+alive in that case: its pane holds the only copy of the failure output.
 
 Record from the entry: `tmux_session` (call it `$TS`), `path` (the worktree).
 
@@ -131,7 +151,21 @@ ssh cc-host 'tmux paste-buffer -d -b ccsp -t "$TS"; sleep 1; tmux send-keys -t "
 detection swallows the Enter that arrives inside the burst, leaving the prompt
 typed but unsubmitted — the delayed second Enter is what actually submits it.
 
-### 7. Verify + report
+### 7. Reap the scratch window
+
+The spawn window is parked on `agent-deck session attach` and **never exits on
+its own** — the session is driven through its own `$TS` from here on, so the
+window is pure clutter. Kill it once the prompt is submitted:
+
+```bash
+ssh cc-host 'tmux kill-window -t "$WID"'
+```
+
+Safe: that only kills a *client* attached to the session. The host runs
+`destroy-unattached off`, so the real session keeps running with no client.
+Skip this only when the spawn failed and you still need the pane's error output.
+
+### 8. Verify + report
 
 Capture the pane once more and confirm the prompt is gone from the input box
 (i.e. submitted, agent responding). Then report one block:
@@ -149,8 +183,10 @@ the same shape with three differences:
 1. **Spawn** (step 2) with the fleet command, which appends `-arch`/`-code` to the session name
    and auto-suffixes the worktree:
    ```bash
-   ssh cc-host 'tmux new-window "cc-code NAME BRANCH"'   # build/coder  (Kimi K2.7-code on Go)
-   ssh cc-host 'tmux new-window "cc-arch NAME BRANCH"'   # plan/architect (MiniMax M2.5 on Go)
+   # same holding-session rule as step 2 — never a bare new-window
+   ssh cc-host 'tmux new-session -d -s cc-dispatch-spawns 2>/dev/null; \
+     tmux new-window -d -P -F "#{window_id}" -t cc-dispatch-spawns: "cc-code NAME BRANCH"'
+   #   cc-code = build/coder (Kimi K2.7-code on Go) · cc-arch = plan/architect (MiniMax M2.5 on Go)
    # optional 3rd arg picks the model: go:kimi3 (Go subscription) | kimi3 (OpenRouter) | any slug
    ```
    The registered `title` is `NAME-BRANCH-code` (or `-arch`); match on that in steps 1 & 3.

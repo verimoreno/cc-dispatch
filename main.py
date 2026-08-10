@@ -114,6 +114,61 @@ def _run_tmux(tmux_session: str, args: list[str], stdin_text: Optional[str] = No
     subprocess.run(cmd, check=True, timeout=15, input=stdin_text, text=stdin_text is not None)
 
 
+# ── Spawn scratch windows ────────────────────────────────────────────────────
+# `tmux new-window` with no -t targets the server's *current* session. We drive
+# tmux over ssh, so $TMUX is unset and "current" resolves to whichever session a
+# client attached to most recently — i.e. one of Veri's live agent sessions,
+# picked essentially at random. cc-spawn then ends by exec-ing `agent-deck
+# session attach`, so the scratch window never exits: it lingers inside that
+# unrelated session as a nested view of the newly created one, carrying the new
+# session's title. The result is two sessions that look like one, and keystrokes
+# meant for one agent landing in another. Pin every spawn to a dedicated
+# detached session, never steal the active window from an attached client (-d),
+# and reap the window once the agent CLI is up.
+SPAWN_SESSION = "cc-dispatch-spawns"
+
+
+def _spawn_window(spawn_cmd: str, window_name: str) -> Optional[str]:
+    """Run `spawn_cmd` in a window of our own holding session.
+
+    Returns the tmux window id ("@42") for later reaping, or None if the create
+    failed — spawning is best-effort, a missing id only forfeits the cleanup.
+
+    Materialise the holding session first, ignoring its result: when it already
+    exists this exits 1 with "duplicate session", which is the steady state. (Not
+    `new-session -A -d`: with -A an existing session sends tmux down the
+    attach-session path, which dies with "open terminal failed: not a terminal"
+    under ssh — so every spawn after the first would silently fail.)
+    """
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", window_name)[:40] or "spawn"
+    try:
+        _run(["tmux", "new-session", "-d", "-s", SPAWN_SESSION])
+        result = _run([
+            "tmux", "new-window", "-d", "-P", "-F", "#{window_id}",
+            "-t", f"{SPAWN_SESSION}:", "-n", name, spawn_cmd,
+        ])
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"ERROR: cc-dispatch could not create spawn window {name}: {exc}", flush=True)
+        return None
+    if result.returncode != 0:
+        print(f"ERROR: cc-dispatch spawn window {name} failed: {result.stderr.strip()}", flush=True)
+        return None
+    window_id = result.stdout.strip()
+    return window_id if window_id.startswith("@") else None
+
+
+def _reap_spawn_window(window_id: Optional[str]):
+    """Close a finished scratch window (it's parked on `agent-deck session
+    attach`, which never exits on its own). Killing it only detaches that client
+    — the host runs destroy-unattached off, so the real session lives on."""
+    if not window_id:
+        return
+    try:
+        _run(["tmux", "kill-window", "-t", window_id])
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"WARN: cc-dispatch could not reap spawn window {window_id}: {exc}", flush=True)
+
+
 def _capture_pane(tmux_session: str) -> Optional[str]:
     """Capture a tmux pane's text, SSH-wrapped in remote mode (via _run).
 
@@ -480,16 +535,11 @@ def create_session(body: dict, background_tasks: BackgroundTasks):
     # reaches the shell — matching _spawn_and_inject — so repo/branch can't inject
     # commands even though they're now regex-constrained (defense in depth).
     spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
-    if REMOTE_HOST:
-        remote_cmd = " ".join(shlex.quote(a) for a in ["tmux", "new-window", spawn_cmd])
-        cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd]
-    else:
-        cmd = ["tmux", "new-window", spawn_cmd]
-    subprocess.Popen(cmd)
+    window_id = _spawn_window(spawn_cmd, branch)
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
     _PICKED_AGENTS[branch] = agent
-    background_tasks.add_task(_launch_agent, branch, agent)
+    background_tasks.add_task(_launch_agent, branch, agent, window_id)
     return {"ok": True, "agent": agent}
 
 
@@ -554,15 +604,21 @@ def _start_agent_cli(tmux_name: str, launcher: str, kind: str) -> bool:
     return False
 
 
-def _launch_agent(branch: str, agent: str):
-    session = _wait_for_session(branch)
-    if not session:
-        print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
-              f"{agent} not launched", flush=True)
-        return
-    if not _start_agent_cli(session["tmux_session"], _LAUNCHERS[agent], agent):
-        print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
-              f"branch={branch}", flush=True)
+def _launch_agent(branch: str, agent: str, window_id: Optional[str] = None):
+    try:
+        session = _wait_for_session(branch)
+        if not session:
+            print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
+                  f"{agent} not launched", flush=True)
+            return
+        if not _start_agent_cli(session["tmux_session"], _LAUNCHERS[agent], agent):
+            print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
+                  f"branch={branch}", flush=True)
+    finally:
+        # The session is registered and driven through its own tmux session by
+        # now, so the scratch window's leftover attach is pure clutter. Reaped on
+        # the timeout paths too — a stuck spawn shouldn't leak a window either.
+        _reap_spawn_window(window_id)
 
 
 @secure_router.post("/api/sessions/from-task")
@@ -623,6 +679,7 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
 
 
 def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str, prompt_extra: str):
+    window_id = None
     try:
         # Idempotency: abort if a session for this branch already exists.
         for s in get_sessions():
@@ -630,11 +687,7 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
                 return
 
         spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
-        if REMOTE_HOST:
-            remote_cmd = " ".join(shlex.quote(a) for a in ["tmux", "new-window", spawn_cmd])
-            subprocess.Popen(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd])
-        else:
-            subprocess.Popen(["tmux", "new-window", spawn_cmd])
+        window_id = _spawn_window(spawn_cmd, branch)
 
         session = _wait_for_session(branch)
         if not session:
@@ -674,6 +727,7 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
         tmux_inject(tmux_name, initial_prompt)
 
     finally:
+        _reap_spawn_window(window_id)
         _SPAWN_SEMAPHORE.release()
         # Held only through the blind window; once done, get_sessions sees the
         # real session and takes over dedup for any later post.
