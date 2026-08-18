@@ -617,7 +617,7 @@ async function sendAll() {
       form.append('file', pendingImage);
       if (prompt) form.append('prompt', prompt);
       const res = await fetch(`/api/sessions/${activeId}/image`, { method: 'POST', body: form });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await errText(res));
       const data = await res.json();
       // data.note warns when the target CLI's model can't actually see images
       // (OpenCode's default fleet models are text-only) — surface it instead of
@@ -631,7 +631,7 @@ async function sendAll() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error(await errText(res));
       toast('Sent ✓', 'ok');
     }
     input.value = '';
@@ -641,6 +641,14 @@ async function sendAll() {
     btn.disabled = false;
     input.focus();
   }
+}
+
+// FastAPI errors arrive as {"detail": "..."} — show the sentence, not the JSON.
+// The send routes refuse with a 409 whose detail says what to do about it
+// (agent not running / still launching), so it needs to be readable in the toast.
+async function errText(res) {
+  const raw = await res.text();
+  try { return JSON.parse(raw).detail || raw; } catch { return raw; }
 }
 
 // ── Image drag & drop ───────────────────────────────────────────────────────

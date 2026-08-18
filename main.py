@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import re
@@ -114,6 +115,61 @@ def _run_tmux(tmux_session: str, args: list[str], stdin_text: Optional[str] = No
     subprocess.run(cmd, check=True, timeout=15, input=stdin_text, text=stdin_text is not None)
 
 
+# ── Spawn scratch windows ────────────────────────────────────────────────────
+# `tmux new-window` with no -t targets the server's *current* session. We drive
+# tmux over ssh, so $TMUX is unset and "current" resolves to whichever session a
+# client attached to most recently — i.e. one of Veri's live agent sessions,
+# picked essentially at random. cc-spawn then ends by exec-ing `agent-deck
+# session attach`, so the scratch window never exits: it lingers inside that
+# unrelated session as a nested view of the newly created one, carrying the new
+# session's title. The result is two sessions that look like one, and keystrokes
+# meant for one agent landing in another. Pin every spawn to a dedicated
+# detached session, never steal the active window from an attached client (-d),
+# and reap the window once the agent CLI is up.
+SPAWN_SESSION = "cc-dispatch-spawns"
+
+
+def _spawn_window(spawn_cmd: str, window_name: str) -> Optional[str]:
+    """Run `spawn_cmd` in a window of our own holding session.
+
+    Returns the tmux window id ("@42") for later reaping, or None if the create
+    failed — spawning is best-effort, a missing id only forfeits the cleanup.
+
+    Materialise the holding session first, ignoring its result: when it already
+    exists this exits 1 with "duplicate session", which is the steady state. (Not
+    `new-session -A -d`: with -A an existing session sends tmux down the
+    attach-session path, which dies with "open terminal failed: not a terminal"
+    under ssh — so every spawn after the first would silently fail.)
+    """
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", window_name)[:40] or "spawn"
+    try:
+        _run(["tmux", "new-session", "-d", "-s", SPAWN_SESSION])
+        result = _run([
+            "tmux", "new-window", "-d", "-P", "-F", "#{window_id}",
+            "-t", f"{SPAWN_SESSION}:", "-n", name, spawn_cmd,
+        ])
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"ERROR: cc-dispatch could not create spawn window {name}: {exc}", flush=True)
+        return None
+    if result.returncode != 0:
+        print(f"ERROR: cc-dispatch spawn window {name} failed: {result.stderr.strip()}", flush=True)
+        return None
+    window_id = result.stdout.strip()
+    return window_id if window_id.startswith("@") else None
+
+
+def _reap_spawn_window(window_id: Optional[str]):
+    """Close a finished scratch window (it's parked on `agent-deck session
+    attach`, which never exits on its own). Killing it only detaches that client
+    — the host runs destroy-unattached off, so the real session lives on."""
+    if not window_id:
+        return
+    try:
+        _run(["tmux", "kill-window", "-t", window_id])
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"WARN: cc-dispatch could not reap spawn window {window_id}: {exc}", flush=True)
+
+
 def _capture_pane(tmux_session: str) -> Optional[str]:
     """Capture a tmux pane's text, SSH-wrapped in remote mode (via _run).
 
@@ -191,7 +247,16 @@ def detect_agent_kind(session: dict) -> tuple[str, str]:
     mid-boot / scrolled past its chrome). One SSH round-trip, so this is for
     per-send calls, not the 5 s session-list poll.
     """
-    pane = _capture_pane(session.get("tmux_session", ""))
+    return _kind_from_pane(_capture_pane(session.get("tmux_session", "")), session)
+
+
+def _kind_from_pane(pane: Optional[str], session: dict) -> tuple[str, str]:
+    """Classify an already-captured pane, same contract as detect_agent_kind.
+
+    Split out so a route that needs the pane for something else — the send
+    routes' bare-shell gate below — can classify it without paying a second
+    capture. Keeps those routes at the one SSH round-trip they always spent.
+    """
     if pane:
         for kind, markers in _PANE_MARKERS:
             if any(m in pane for m in markers):
@@ -264,6 +329,70 @@ def find_session(session_id: str) -> dict:
     return session
 
 
+# One re-entrant lock per tmux session, serialising every injection into that
+# session's pane. tmux_inject's paste and its submitting Enter are two separate
+# tmux calls ~0.8 s apart, and a second injection landing in that gap appends to
+# the still-unsubmitted line — the two texts merge into a single command. That is
+# exactly how a prompt sent while the launcher was starting became the shell line
+# `ccdShip to "Ao Reis"...`, which bash then ran (and whose remaining lines it ran
+# too, one "command not found" each). Re-entrant because _start_agent_cli holds
+# this across its whole launch loop and calls tmux_inject inside it — same thread,
+# so the nested acquire must not deadlock.
+#
+# Not swept: one dead session leaks one lock object (~100 bytes) and the fleet is
+# ~12 sessions, so growth is negligible next to the process lifetime. A sweep
+# would have to race threads that already hold a reference but have not acquired
+# yet, which is a worse trade than the bytes.
+_INJECT_LOCKS_GUARD = threading.Lock()
+_INJECT_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _inject_lock(tmux_session: str) -> threading.RLock:
+    with _INJECT_LOCKS_GUARD:
+        lock = _INJECT_LOCKS.get(tmux_session)
+        if lock is None:
+            lock = _INJECT_LOCKS[tmux_session] = threading.RLock()
+        return lock
+
+
+@contextlib.contextmanager
+def _hold_for_send(tmux_session: str):
+    """Hold a session's inject lock for one user-initiated send.
+
+    Short timeout on purpose: the only thing that holds this lock for long is
+    _start_agent_cli's launch loop, and a send arriving mid-launch is exactly the
+    collision this guards against. Failing fast with 409 lets the caller retry
+    once the TUI is up, instead of stalling the request for minutes.
+    """
+    lock = _inject_lock(tmux_session)
+    if not lock.acquire(timeout=2.5):
+        raise HTTPException(409, "Session is busy starting its agent CLI - retry in a moment")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _refuse_if_bare_shell(pane: Optional[str], force: bool):
+    """Reject a send that would land in bash instead of in an agent's TUI.
+
+    _shell_idle is the right test here rather than _repl_ready: a live TUI's last
+    line is its persistent footer, never a shell prompt, whereas _repl_ready would
+    also reject a *busy* agent whose chrome has scrolled off (Codex does this) --
+    and blocking legitimate sends would be worse than the bug being fixed. An
+    unreadable pane (None) is let through, the same best-effort posture the launch
+    gate takes when a capture fails.
+    """
+    if force or not pane or not _shell_idle(pane):
+        return
+    raise HTTPException(409, (
+        "Session is sitting at a bare shell - no agent CLI is running there, so "
+        "this text would be executed by bash rather than read by an agent. Start "
+        "the agent in the session first (ccd / ocd / cxd), or resend with "
+        "force=true to type it into the shell deliberately."
+    ))
+
+
 def tmux_inject(tmux_session: str, text: str, send_enter: bool = True):
     """Type `text` into a session's TUI and submit it.
 
@@ -287,11 +416,15 @@ def tmux_inject(tmux_session: str, text: str, send_enter: bool = True):
     # Unique buffer name: concurrent injections into different sessions must not
     # consume each other's buffer (-d deletes it after pasting).
     buf = f"ccd{uuid.uuid4().hex[:8]}"
-    _run_tmux(tmux_session, ["load-buffer", "-b", buf, "-"], stdin_text=text)
-    _run_tmux(tmux_session, ["paste-buffer", "-d", "-p", "-b", buf, "-t", tmux_session])
-    if send_enter:
-        time.sleep(0.8)
-        _run_tmux(tmux_session, ["send-keys", "-t", tmux_session, "Enter"])
+    # Held across paste AND the delayed Enter: those two calls are one indivisible
+    # "type this and submit it", and anything squeezing between them corrupts the
+    # line for both texts. See _INJECT_LOCKS.
+    with _inject_lock(tmux_session):
+        _run_tmux(tmux_session, ["load-buffer", "-b", buf, "-"], stdin_text=text)
+        _run_tmux(tmux_session, ["paste-buffer", "-d", "-p", "-b", buf, "-t", tmux_session])
+        if send_enter:
+            time.sleep(0.8)
+            _run_tmux(tmux_session, ["send-keys", "-t", tmux_session, "Enter"])
 
 
 # Agent picked in the UI for picker-spawned sessions, keyed by branch. Needed
@@ -324,12 +457,16 @@ async def send_prompt(session_id: str, body: dict):
     prompt = body.get("prompt", "").strip()
     if not prompt:
         raise HTTPException(400, "Empty prompt")
-    tmux_inject(session["tmux_session"], prompt)
-    # Probed after the injection so it costs the send no latency. Reported for
-    # the same reason the image route probes: the cheap group guess is wrong for
-    # regrouped or hand-launched sessions, and a wrong answer here would be a
-    # misleading thing to debug against.
-    kind, _ = detect_agent_kind(session)
+    tmux_session = session["tmux_session"]
+    pane = _capture_pane(tmux_session)
+    _refuse_if_bare_shell(pane, force=body.get("force") is True)
+    with _hold_for_send(tmux_session):
+        tmux_inject(tmux_session, prompt)
+    # Classified from the pane the gate already captured, so this costs no extra
+    # round-trip. Reported for the same reason the image route reports it: the
+    # cheap group guess is wrong for regrouped or hand-launched sessions, and a
+    # wrong answer here would be a misleading thing to debug against.
+    kind, _ = _kind_from_pane(pane, session)
     return {"ok": True, "agent": kind}
 
 
@@ -350,8 +487,12 @@ async def send_image(
 ):
     session = find_session(session_id)
     # Pane-probed: the vision warning below is only right if we know which CLI
-    # (and therefore which model family) is really on the other end.
-    kind, _ = detect_agent_kind(session)
+    # (and therefore which model family) is really on the other end. The same
+    # capture drives the bare-shell gate — run it before the upload so a refusal
+    # costs no scp.
+    pane = _capture_pane(session["tmux_session"])
+    kind, _ = _kind_from_pane(pane, session)
+    _refuse_if_bare_shell(pane, force=False)
     # The extension reaches a remote shell via scp's remote argument, so take it
     # from the (client-controlled) filename only if it's a plain alphanumeric
     # suffix. "shot.png;id" would otherwise arrive as a command.
@@ -390,7 +531,8 @@ async def send_image(
     inject = f"{prompt.strip()} {container_path}" if prompt and prompt.strip() \
         else f"Look at this image: {container_path}"
 
-    tmux_inject(session["tmux_session"], inject)
+    with _hold_for_send(session["tmux_session"]):
+        tmux_inject(session["tmux_session"], inject)
     resp = {"ok": True, "path": container_path, "agent": kind}
     if kind == "opencode":
         # OpenCode itself handles the image fine — its read tool returns an image
@@ -480,16 +622,11 @@ def create_session(body: dict, background_tasks: BackgroundTasks):
     # reaches the shell — matching _spawn_and_inject — so repo/branch can't inject
     # commands even though they're now regex-constrained (defense in depth).
     spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
-    if REMOTE_HOST:
-        remote_cmd = " ".join(shlex.quote(a) for a in ["tmux", "new-window", spawn_cmd])
-        cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd]
-    else:
-        cmd = ["tmux", "new-window", spawn_cmd]
-    subprocess.Popen(cmd)
+    window_id = _spawn_window(spawn_cmd, branch)
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
     _PICKED_AGENTS[branch] = agent
-    background_tasks.add_task(_launch_agent, branch, agent)
+    background_tasks.add_task(_launch_agent, branch, agent, window_id)
     return {"ok": True, "agent": agent}
 
 
@@ -528,41 +665,53 @@ def _start_agent_cli(tmux_name: str, launcher: str, kind: str) -> bool:
     A pane with output but no shell prompt means something is mid-boot — leave
     it alone. Bound on wall-clock via a monotonic deadline — a plain iteration
     count would balloon because each _capture_pane can take up to 10 s.
+
+    Holds the session's inject lock for the whole launch, so a prompt sent from
+    the UI cannot land between the launcher and its Enter (or between two
+    re-sends) and merge with it. Sends arriving meanwhile get a fast 409 from
+    _hold_for_send rather than corrupting the shell line.
     """
-    sends = 1
-    tmux_inject(tmux_name, launcher)
-    start = last_send = time.monotonic()
-    while time.monotonic() < start + 240:
-        time.sleep(5)
-        pane = _capture_pane(tmux_name)
-        if _repl_ready(pane, kind):
-            time.sleep(1)  # let the input box finish painting before any paste
-            return True
-        # Codex parks its composer behind an "Update available!" modal whenever
-        # a new release ships (recurs every release — 0.146.0 was the first hit).
-        # Answer "2. Skip": each session is a fresh container, so updating here
-        # only slows the launch and the image update is where upgrades belong.
-        if pane and "Update available" in pane and "Skip" in pane:
-            _run_tmux(tmux_name, ["send-keys", "-t", tmux_name, "2", "Enter"])
-            continue
-        if sends >= 4 or time.monotonic() - last_send < 30:
-            continue
-        if not (pane and pane.strip()) or _shell_idle(pane):
-            tmux_inject(tmux_name, launcher)
-            sends += 1
-            last_send = time.monotonic()
-    return False
+    with _inject_lock(tmux_name):
+        sends = 1
+        tmux_inject(tmux_name, launcher)
+        start = last_send = time.monotonic()
+        while time.monotonic() < start + 240:
+            time.sleep(5)
+            pane = _capture_pane(tmux_name)
+            if _repl_ready(pane, kind):
+                time.sleep(1)  # let the input box finish painting before any paste
+                return True
+            # Codex parks its composer behind an "Update available!" modal whenever
+            # a new release ships (recurs every release — 0.146.0 was the first hit).
+            # Answer "2. Skip": each session is a fresh container, so updating here
+            # only slows the launch and the image update is where upgrades belong.
+            if pane and "Update available" in pane and "Skip" in pane:
+                _run_tmux(tmux_name, ["send-keys", "-t", tmux_name, "2", "Enter"])
+                continue
+            if sends >= 4 or time.monotonic() - last_send < 30:
+                continue
+            if not (pane and pane.strip()) or _shell_idle(pane):
+                tmux_inject(tmux_name, launcher)
+                sends += 1
+                last_send = time.monotonic()
+        return False
 
 
-def _launch_agent(branch: str, agent: str):
-    session = _wait_for_session(branch)
-    if not session:
-        print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
-              f"{agent} not launched", flush=True)
-        return
-    if not _start_agent_cli(session["tmux_session"], _LAUNCHERS[agent], agent):
-        print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
-              f"branch={branch}", flush=True)
+def _launch_agent(branch: str, agent: str, window_id: Optional[str] = None):
+    try:
+        session = _wait_for_session(branch)
+        if not session:
+            print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
+                  f"{agent} not launched", flush=True)
+            return
+        if not _start_agent_cli(session["tmux_session"], _LAUNCHERS[agent], agent):
+            print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
+                  f"branch={branch}", flush=True)
+    finally:
+        # The session is registered and driven through its own tmux session by
+        # now, so the scratch window's leftover attach is pure clutter. Reaped on
+        # the timeout paths too — a stuck spawn shouldn't leak a window either.
+        _reap_spawn_window(window_id)
 
 
 @secure_router.post("/api/sessions/from-task")
@@ -623,6 +772,7 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
 
 
 def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str, prompt_extra: str):
+    window_id = None
     try:
         # Idempotency: abort if a session for this branch already exists.
         for s in get_sessions():
@@ -630,11 +780,7 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
                 return
 
         spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
-        if REMOTE_HOST:
-            remote_cmd = " ".join(shlex.quote(a) for a in ["tmux", "new-window", spawn_cmd])
-            subprocess.Popen(["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd])
-        else:
-            subprocess.Popen(["tmux", "new-window", spawn_cmd])
+        window_id = _spawn_window(spawn_cmd, branch)
 
         session = _wait_for_session(branch)
         if not session:
@@ -647,13 +793,6 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
         # ccd would only ever run in the host scratch window, never in this
         # session. Launch Claude Code here, in the session's own terminal.
         tmux_name = session["tmux_session"]
-        # If the REPL never reports ready we still fall through and inject
-        # (best-effort — the footer marker may lag or the string may drift),
-        # but log a WARN so silent drops are diagnosable.
-        if not _start_agent_cli(tmux_name, "ccd", "claude"):
-            print(f"WARN: cc-dispatch REPL not confirmed ready after 150s; "
-                  f"injecting anyway branch={branch} task_id={task_id}", flush=True)
-
         # Wrap user-controlled fields so the agent knows they're untrusted.
         task_meta = (
             f"=== TASK METADATA (untrusted, from database) ===\n"
@@ -668,12 +807,26 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
             f"Then run /grill-me to deeply explore the codebase and produce an "
             f"implementation plan. Do not write any code until the plan is complete."
         )
+        # Launch and first injection under one lock hold (re-entrant, same
+        # thread): the prompt is built above so nothing but tmux work happens
+        # inside, and no UI send can slip into the window between the REPL going
+        # ready and this prompt landing.
+        #
+        # If the REPL never reports ready we still fall through and inject
+        # (best-effort — the footer marker may lag or the string may drift),
+        # but log a WARN so silent drops are diagnosable.
+        #
         # tmux_inject pastes the multi-line prompt as one bracketed-paste block
         # and sends the submitting Enter after the burst settles, so no extra
         # Enter is needed here.
-        tmux_inject(tmux_name, initial_prompt)
+        with _inject_lock(tmux_name):
+            if not _start_agent_cli(tmux_name, "ccd", "claude"):
+                print(f"WARN: cc-dispatch REPL not confirmed ready after 150s; "
+                      f"injecting anyway branch={branch} task_id={task_id}", flush=True)
+            tmux_inject(tmux_name, initial_prompt)
 
     finally:
+        _reap_spawn_window(window_id)
         _SPAWN_SEMAPHORE.release()
         # Held only through the blind window; once done, get_sessions sees the
         # real session and takes over dedup for any later post.
