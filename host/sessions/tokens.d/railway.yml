@@ -1,0 +1,4 @@
+services:
+  cc-session:
+    environment:
+      - RAILWAY_TOKEN=${RAILWAY_TOKEN:-}

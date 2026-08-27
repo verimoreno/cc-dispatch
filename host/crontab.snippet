@@ -1,0 +1,2 @@
+0 4 * * * docker network prune -f >> /tmp/docker-prune.log 2>&1
+17 * * * * cd /opt/cc-notes && git add -A && git -c user.name=cc-notes-cron -c user.email=cc-notes@cc-host commit -q -m "auto $(date -u +\%FT\%TZ)" >/dev/null 2>&1; git -C /opt/cc-notes push -q origin master 2>/dev/null || echo "$(date -u +\%FT\%TZ) push failed" >> /opt/cc-notes/.backup-failures

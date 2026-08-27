@@ -1,0 +1,119 @@
+services:
+  cc-session:
+    build:
+      context: .
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: cc-session:latest
+    container_name: ${SESSION_NAME:-cc-default}
+    hostname: ${SESSION_NAME:-cc-default}
+    stdin_open: true
+    tty: true
+
+    # IPC=host prevents Chromium tab crashes under parallel load
+    ipc: host
+    network_mode: host
+
+    # DNS fallbacks for under-load reliability
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+    volumes:
+      # ---- SHARED across all sessions: login once, MCPs once, forever ----
+      - cc-auth:/home/pwuser/.claude
+      - cc-codex:/home/pwuser/.codex
+      - cc-gemini:/home/pwuser/.gemini
+      - cc-config:/home/pwuser/.config
+      - cc-opencode:/home/pwuser/.opencode
+      - cc-npm:/home/pwuser/.npm
+      - cc-playwright:/home/pwuser/.cache/ms-playwright
+      - cc-tiktoken:/home/pwuser/.cache/tiktoken
+      - cc-pip-audit:/home/pwuser/.cache/pip-audit
+      - cc-gradle:/home/pwuser/.gradle
+
+      # ---- Host-side credentials (read-only) ----
+      - ${HOME}/.ssh:/home/pwuser/.ssh:ro
+      - ${HOME}/.gitconfig:/home/pwuser/.gitconfig:ro
+
+      # ---- Persistent .claude.json (MCP config + first-run state) ----
+      - /opt/cc-data/claude.json:/home/pwuser/.claude.json
+
+      # ---- SHARED plan-notes store: cross-session coordination (see cc-plan-notes skill) ----
+      - /opt/cc-notes:/opt/cc-notes
+
+      # ---- PER-SESSION repo dir mounted at SAME host path (so git worktree gitdir absolute paths resolve) ----
+      - ${REPO_DIR}:${REPO_DIR}
+
+      # ---- PER-SESSION worktree at expected work dir ----
+      - ${WORKTREE_PATH}:/home/pwuser/work
+
+    environment:
+      # Deploy tokens (VERCEL/RAILWAY/SUPABASE) are NOT default: opt-in per spawn
+      # via CC_TOKENS=vercel,railway,supabase -> cc-spawn adds tokens.d/<t>.yml
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GH_TOKEN=${GITHUB_TOKEN:-}
+      # Optional API-key auth for Codex/Gemini (alternative to interactive login)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      # ---- OpenCode (agent fleet) ----
+      # Keys from /opt/cc-sessions/.env; MODEL/MODE set per-session by cc-arch / cc-code.
+      # OPENROUTER_API_KEY -> openrouter/* models; OPENCODE_API_KEY -> opencode/* (Zen/Go subscription)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENCODE_MODEL=${OPENCODE_MODEL:-}
+      - OPENCODE_MODE=${OPENCODE_MODE:-}
+      - OPENCODE_CONFIG=/home/pwuser/.opencode/opencode.json
+      - PLAYWRIGHT_BROWSERS_PATH=/home/pwuser/.cache/ms-playwright
+      - TIKTOKEN_CACHE_DIR=/home/pwuser/.cache/tiktoken
+      - CC_HOST_MODE=autonomous
+
+    # ---- Resource caps (host reality: 62 GiB RAM, 12 threads) ----
+    # Dynamic per-spawn cap: 4g default, 6g for browser/build-heavy tasks via
+    # CC_MEM_LIMIT. Admission (cc-spawn) bounds the SUM of admitted limits at
+    # 48 GiB / 12 resident sessions / 2 concurrent starts — raise only from
+    # measured OOM/PSI data. memswap=mem: containers never touch swap.
+    # cpus 2.0 is deliberate overcommit (sessions are mostly idle).
+    mem_limit: ${CC_MEM_LIMIT:-4g}
+    memswap_limit: ${CC_MEM_LIMIT:-4g}
+    pids_limit: 2048
+    cpus: 2.0
+    labels:
+      com.fractional.cc-fleet: "session"
+
+    working_dir: /home/pwuser/work
+    restart: on-failure:3
+
+volumes:
+  cc-auth:
+    external: true
+    name: cc-sessions_cc-auth
+  cc-codex:
+    external: true
+    name: cc-sessions_cc-codex
+  cc-gemini:
+    external: true
+    name: cc-sessions_cc-gemini
+  cc-config:
+    external: true
+    name: cc-sessions_cc-config
+  cc-opencode:
+    external: true
+    name: cc-sessions_cc-opencode
+  cc-npm:
+    external: true
+    name: cc-sessions_cc-npm
+  cc-playwright:
+    external: true
+    name: cc-sessions_cc-playwright
+  cc-tiktoken:
+    external: true
+    name: cc-sessions_cc-tiktoken
+  cc-pip-audit:
+    external: true
+    name: cc-sessions_cc-pip-audit
+  cc-gradle:
+    external: true
+    name: cc-sessions_cc-gradle

@@ -29,6 +29,14 @@ per `cc-docker-host-setup`.
   Charset: letters, digits, `.` `_` `/` `-`; must not start with `-` or `/`.
 - **prompt** — the task. If Veri gave a wearefractional task ID, use the
   from-task prompt template at the bottom instead of pasting the whole task in.
+- **memory & tokens** (optional, since Wave 0 hardening 2026-08-27) — prefix the
+  spawn with `CC_MEM_LIMIT=6g` for browser/build-heavy tasks (Playwright, e2e,
+  big builds); default is 4g, allowed 2g–8g. `CC_TOKENS=vercel,railway,supabase`
+  opts the session into deploy tokens — the default env carries only
+  GITHUB_TOKEN + model keys. cc-spawn now runs admission control and may REFUSE
+  a spawn (fleet full: 12 resident / 48G admitted / 2 concurrent starts, or low
+  host memory/disk); the error says why — don't blind-retry, reap sessions via
+  [[cc-cleanup-sessions]] or wait for the running starts to finish.
 - **plan** (optional) — a plan id under `/opt/cc-notes` (see [[cc-plan-notes]]).
   When set, prepend to the prompt:
   `You are part of plan /opt/cc-notes/<plan>/ — follow the plan-notes protocol in your CLAUDE.md before starting.`

@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# cc-code — spawn an OpenCode CODER session (build mode, Kimi K2.5) in a Docker
+# container with an auto-created worktree. Mirrors cc-spawn, but launches OpenCode instead
+# of Claude Code and does NOT auto-start the agent (manual invocation for control).
+# Registers with agent-deck (group=code) so it appears in `agent-deck list` and the TUI.
+# Usage: cc-code <repo-name-or-url> <branch-name>
+
+set -euo pipefail
+
+REPO_INPUT="${1:-}"
+BRANCH="${2:-}"
+MODEL_ARG="${3:-}"   # optional: shorthand (kimi3, m3, ...) or full openrouter slug
+
+if [[ -z "$REPO_INPUT" || -z "$BRANCH" ]]; then
+  cat <<EOF
+Usage: cc-code <repo-name-or-url> <branch-name> [model]
+
+Launches OpenCode in BUILD mode (implementation / code generation).
+Default model: Kimi K2.7-code on the OpenCode Go subscription (opencode-go/kimi-k2.7-code).
+Pass an optional [model] to override. Session, worktree and agent-deck group are suffixed '-code'.
+
+Model shorthands (OpenRouter, pay-per-token):  kimi2.5 kimi2.6 kimi2.7 kimi3 · m2.5 m2.7 m3
+Prefix with 'go:' for the OpenCode Go subscription (opencode-go/*, flat-rate):
+  go:kimi3  go:kimi2.7  go:m2.5  go:m3  go:glm5.2  go:deepseek  go:qwen
+  (a plain 'provider/model' is treated as an OpenRouter slug, e.g. qwen/qwen3-coder)
+
+Examples:
+  cc-code fractional roadmap-impl               # Kimi K2.7-code on Go (default)
+  cc-code fractional roadmap-impl go:kimi3      # -> opencode-go/kimi-k3 (subscription)
+  cc-code fractional roadmap-impl kimi3         # -> openrouter/moonshotai/kimi-k3 (pay-per-token)
+
+Default org: wearefractional. Override by passing full git URL.
+EOF
+  exit 1
+fi
+
+# ---- Resolve an optional model shorthand / slug to a full openrouter/<...> id ----
+resolve_model() {
+  case "$1" in
+    # ---- OpenCode Go subscription (opencode-go/*, covered by the $10/mo plan) ----
+    go:kimi3|go:k3)      echo "opencode-go/kimi-k3" ;;
+    go:kimi2.7|go:k2.7)  echo "opencode-go/kimi-k2.7-code" ;;
+    go:kimi2.6|go:k2.6)  echo "opencode-go/kimi-k2.6" ;;
+    go:kimi2.5|go:k2.5)  echo "opencode-go/kimi-k2.5" ;;
+    go:m3)               echo "opencode-go/minimax-m3" ;;
+    go:m2.7)             echo "opencode-go/minimax-m2.7" ;;
+    go:m2.5)             echo "opencode-go/minimax-m2.5" ;;
+    go:glm5.2)           echo "opencode-go/glm-5.2" ;;
+    go:deepseek|go:ds|go:deepseek-pro)  echo "opencode-go/deepseek-v4-pro" ;;
+    go:dsflash|go:deepseek-flash)       echo "opencode-go/deepseek-v4-flash" ;;
+    # ---- DeepSeek direct (native api.deepseek.com, deepseek/*) ----
+    deepseek|ds|deepseek-pro|dspro)     echo "deepseek/deepseek-v4-pro" ;;    # reasoning, best coder
+    dsflash|deepseek-flash)             echo "deepseek/deepseek-v4-flash" ;;   # fast tier (=deepseek-chat)
+    go:qwen)             echo "opencode-go/qwen3.7-max" ;;
+    go:*)                echo "opencode-go/${1#go:}" ;;   # go:<exact-slug>
+    # ---- OpenRouter (openrouter/*, pay-per-token) ----
+    kimi3|k3)          echo "openrouter/moonshotai/kimi-k3" ;;
+    kimi2.7|k2.7)      echo "openrouter/moonshotai/kimi-k2.7-code" ;;
+    kimi2.6|k2.6)      echo "openrouter/moonshotai/kimi-k2.6" ;;
+    kimi2.5|k2.5)      echo "openrouter/moonshotai/kimi-k2.5" ;;
+    m3|minimax3)       echo "openrouter/minimax/minimax-m3" ;;
+    m2.7|minimax2.7)   echo "openrouter/minimax/minimax-m2.7" ;;
+    m2.5|minimax2.5)   echo "openrouter/minimax/minimax-m2.5" ;;
+    openrouter/*|opencode-go/*|opencode/*|deepseek/*) echo "$1" ;;   # already a full ref
+    */*)               echo "openrouter/$1" ;; # bare provider/model -> prefix openrouter/
+    *)                 echo "" ;;             # unknown shorthand
+  esac
+}
+
+# ---- OpenCode fleet config (CODER) ----
+MODE="build"
+SUFFIX="code"
+AGENTDECK_GROUP="${CC_AGENTDECK_GROUP:-code}"
+MODE_LABEL="CODER (build mode)"
+
+DEFAULT_MODEL="deepseek/deepseek-v4-pro"
+if [[ -n "$MODEL_ARG" ]]; then
+  MODEL="$(resolve_model "$MODEL_ARG")"
+  if [[ -z "$MODEL" ]]; then
+    echo "ERROR: unknown model '$MODEL_ARG'."
+    echo "OpenRouter: kimi2.5/2.6/2.7/3 · m2.5/m2.7/m3   |   Go subscription: prefix go: (go:kimi3, go:glm5.2)   |   or a full slug."
+    exit 1
+  fi
+else
+  MODEL="$DEFAULT_MODEL"
+fi
+MODEL_LABEL="${MODEL#openrouter/}"
+
+BASE_DIR="${CC_BASE_DIR:-$HOME/Fractional}"
+DEFAULT_ORG="${CC_DEFAULT_ORG:-wearefractional}"
+
+if [[ "$REPO_INPUT" =~ ^(https?://|git@) ]]; then
+  REPO_URL="$REPO_INPUT"
+  REPO_NAME=$(basename "$REPO_INPUT" .git)
+else
+  REPO_NAME="$REPO_INPUT"
+  REPO_URL="git@github.com:${DEFAULT_ORG}/${REPO_NAME}.git"
+fi
+
+REPO_DIR="$BASE_DIR/$REPO_NAME"
+BARE_DIR="$REPO_DIR/.bare"
+WORKTREE_DIR="$REPO_DIR/wt-${BRANCH}-${SUFFIX}"
+
+SESSION_NAME="${REPO_NAME}-${BRANCH}-${SUFFIX}"
+SESSION_NAME=$(echo "$SESSION_NAME" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_' | tr 'A-Z' 'a-z')
+
+echo "→ Repo:     $REPO_NAME ($REPO_URL)"
+echo "→ Branch:   $BRANCH"
+echo "→ Worktree: $WORKTREE_DIR"
+echo "→ Session:  $SESSION_NAME"
+echo "→ Agent:    OpenCode — $MODE_LABEL — $MODEL_LABEL"
+echo
+
+# 1. Clone bare repo if missing
+if [[ ! -d "$BARE_DIR" ]]; then
+  echo "[1/5] Bare repo missing — cloning $REPO_URL"
+  mkdir -p "$REPO_DIR"
+  git clone --bare "$REPO_URL" "$BARE_DIR"
+  echo "gitdir: ./.bare" > "$REPO_DIR/.git"
+  git --git-dir="$BARE_DIR" config remote.origin.fetch \
+    "+refs/heads/*:refs/remotes/origin/*"
+  git --git-dir="$BARE_DIR" fetch origin
+else
+  echo "[1/5] Bare repo exists — fetching latest"
+  git --git-dir="$BARE_DIR" fetch origin --prune
+fi
+
+# 2. Create worktree if missing
+if [[ -d "$WORKTREE_DIR" ]]; then
+  echo "[2/5] Worktree exists — reusing $WORKTREE_DIR"
+else
+  echo "[2/5] Creating worktree on branch '$BRANCH'"
+  cd "$REPO_DIR"
+
+  if git --git-dir="$BARE_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git --git-dir="$BARE_DIR" worktree add "$WORKTREE_DIR" "$BRANCH"
+  elif git --git-dir="$BARE_DIR" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+    git --git-dir="$BARE_DIR" worktree add "$WORKTREE_DIR" \
+      -b "$BRANCH" --track "origin/$BRANCH"
+  else
+    DEFAULT_BRANCH="main"
+    git --git-dir="$BARE_DIR" show-ref --verify --quiet "refs/remotes/origin/main" \
+      || DEFAULT_BRANCH="master"
+    echo "      → new branch, creating from origin/$DEFAULT_BRANCH"
+    git --git-dir="$BARE_DIR" worktree add "$WORKTREE_DIR" \
+      -b "$BRANCH" "origin/$DEFAULT_BRANCH"
+  fi
+fi
+
+# 3. Start container if not already running
+STARTED_NOW=0   # 1 only on a fresh container start -> gates the ocd auto-launch below
+if docker ps --format '{{.Names}}' | grep -qx "$SESSION_NAME"; then
+  echo "[3/5] Container '$SESSION_NAME' already running"
+else
+  echo "[3/5] Starting container (OPENCODE_MODE=$MODE, model=$MODEL)"
+  cd /opt/cc-sessions
+  export SESSION_NAME
+  export WORKTREE_PATH="$WORKTREE_DIR"
+  export REPO_DIR
+  export OPENCODE_MODE="$MODE"
+  export OPENCODE_MODEL="$MODEL"
+  docker compose -p "$SESSION_NAME" up -d
+  STARTED_NOW=1
+  sleep 1
+fi
+
+# 3b. Auto-build the graphify knowledge graph in the background (fresh start only) so the agent can
+#     query it (graphify query/explain/path) instead of reading files. Best-effort; git-excluded.
+if [[ "${STARTED_NOW:-0}" == "1" ]]; then
+  docker exec -d "$SESSION_NAME" bash -lc '
+    cd /home/pwuser/work 2>/dev/null || exit 0
+    command -v graphify >/dev/null 2>&1 || exit 0
+    ex=$(git rev-parse --git-path info/exclude 2>/dev/null) && [ -n "$ex" ] && ! grep -qxF "graphify-out/" "$ex" 2>/dev/null && printf "graphify-out/\n" >> "$ex"
+    graphify . --no-viz >/tmp/graphify-build.log 2>&1
+  ' >/dev/null 2>&1 || true
+  echo "[3b] graphify knowledge graph building in background"
+fi
+
+
+# 4. Register with agent-deck (idempotent)
+existing_id=$(agent-deck list -json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    sessions = data if isinstance(data, list) else data.get('sessions', [])
+    for s in sessions:
+        if s.get('title') == '$SESSION_NAME':
+            print(s.get('id', ''))
+            break
+except Exception:
+    pass
+" 2>/dev/null || true)
+
+if [[ -n "$existing_id" ]]; then
+  echo "[4/5] agent-deck instance exists (id=$existing_id) — reusing"
+  AGENTDECK_ID="$existing_id"
+else
+  echo "[4/5] Registering with agent-deck (group=$AGENTDECK_GROUP)"
+  AGENTDECK_ID=$(agent-deck add "$WORKTREE_DIR" \
+    -t="$SESSION_NAME" \
+    -g="$AGENTDECK_GROUP" \
+    --no-parent \
+    -cmd="docker exec -it $SESSION_NAME bash" \
+    -json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+
+  if [[ -z "$AGENTDECK_ID" ]]; then
+    echo "      WARN: agent-deck add failed — falling back to plain tmux"
+    AGENTDECK_ID=""
+  fi
+fi
+
+# 5. Start agent-deck session (creates tmux) and attach
+if [[ -n "$AGENTDECK_ID" ]]; then
+  echo "[5/5] Attaching via agent-deck (Ctrl-B D to detach, container keeps running)"
+  agent-deck session start "$AGENTDECK_ID" 2>&1 | grep -v '^$' || true
+  # Disable tmux mouse so terminal-native copy works (agent-deck force-enables mouse per session)
+  tmux_name=$(agent-deck list -json 2>/dev/null | python3 -c "
+import json, sys
+target='$AGENTDECK_ID'
+for s in json.load(sys.stdin):
+    if s.get('id') == target:
+        print(s.get('tmux_session', ''))
+        break
+" 2>/dev/null || true)
+  if [[ -n "$tmux_name" ]]; then
+    tmux set-option -t "$tmux_name" mouse off 2>/dev/null || true
+    if [[ "$STARTED_NOW" == "1" ]]; then
+      # Auto-launch OpenCode via ocd on first spawn — analogous to ccd in a cc-spawn session
+      # (opencode --auto + this session's agent+model). Gated on a fresh start so a reattach
+      # doesn't type "ocd" into an already-running OpenCode TUI.
+      tmux send-keys -t "$tmux_name" "clear; echo 'Launching OpenCode — $MODE_LABEL — $MODEL_LABEL (ocd)...'; ocd" Enter 2>/dev/null || true
+    fi
+  fi
+  exec agent-deck session attach "$AGENTDECK_ID"
+fi
+
+# Fallback path — agent-deck unavailable: legacy tmux behavior
+echo "[5/5] Attaching via tmux (fallback — agent-deck unavailable)"
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  exec tmux attach-session -t "$SESSION_NAME"
+fi
+exec tmux new-session -s "$SESSION_NAME" \
+  "docker exec -it $SESSION_NAME bash; echo; echo '[Container shell exited. Press Enter to close.]'; read"

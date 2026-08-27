@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# cc-init-playwright — initialize Playwright Test Agents in the current worktree
+# Run this INSIDE a cc-spawn container, from inside the project worktree.
+# Generates .claude/agents/playwright-{planner,generator,healer}.md
+
+set -euo pipefail
+
+# Sanity: we should be in a worktree (mounted at /home/pwuser/work)
+if [[ ! -d ".git" && ! -f ".git" ]]; then
+  echo "ERROR: current directory ($(pwd)) doesn't look like a git repo / worktree."
+  echo "Run this from inside a cc-spawn container, in the project root."
+  exit 1
+fi
+
+# Sanity: Playwright must be present (or be installable)
+if [[ ! -f "package.json" ]]; then
+  echo "ERROR: no package.json. This needs to run inside a JS/TS project."
+  exit 1
+fi
+
+if ! grep -q '"@playwright/test"' package.json 2>/dev/null; then
+  echo "Note: @playwright/test not in package.json — installing it first."
+  npm install -D @playwright/test@latest
+  npx playwright install chromium  # browsers cached in shared volume
+fi
+
+# Init the agents (Claude Code loop)
+echo "Running: npx playwright init-agents --loop=claude"
+npx playwright init-agents --loop=claude
+
+echo
+echo "Done. Playwright agents created at:"
+ls -la .claude/agents/playwright-*.md 2>/dev/null || echo "  (check .claude/agents/ for output)"
+echo
+echo "Use them in Claude Code with /agents or @-mentions."

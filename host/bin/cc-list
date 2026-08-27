@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# cc-list — show running Claude Code sessions and their worktrees
+
+set -euo pipefail
+
+if [[ "$(docker ps -q | wc -l)" -eq 0 ]]; then
+  echo "No running sessions."
+  exit 0
+fi
+
+printf "\n%-40s %-15s %s\n" "SESSION" "STATUS" "WORKTREE"
+echo "----------------------------------------------------------------------------------"
+
+for name in $(docker ps --format "{{.Names}}"); do
+  status=$(docker ps --filter "name=^${name}$" --format "{{.Status}}" | head -1)
+  worktree=$(docker inspect "$name" --format "{{range .Mounts}}{{.Source}}{{println}}{{end}}" 2>/dev/null | grep -E "/Fractional/[^/]+/wt-" | head -1)
+  worktree="${worktree:-—}"
+  printf "%-40s %-15s %s\n" "$name" "${status:0:14}" "$worktree"
+done
+
+echo
+echo "Resource usage:"
+docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
+
+echo
+echo "Host load:"
+uptime
+free -h | grep -E "^(Mem|Swap)"

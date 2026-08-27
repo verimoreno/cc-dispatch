@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# cc-teardown-idle — stop+remove every cc-spawn session EXCEPT the ones currently
+# active on agent-deck (plus any names passed with --keep). Frees RAM on the host.
+#
+# Usage:
+#   cc-teardown-idle                     # DRY RUN (default) — prints the plan, changes nothing
+#   cc-teardown-idle --execute           # actually stop containers + remove worktrees
+#   cc-teardown-idle --keep a,b          # also keep sessions a and b (in addition to agent-deck)
+#   cc-teardown-idle --execute --keep x  # combine
+#
+# Keepers are matched by container/session name (== agent-deck title). Their worktrees
+# are located via the container's /home/pwuser/work mount and preserved by EXACT path,
+# so nested slashed-branch worktrees (wt-feat/foo) are safe. Branches are never deleted.
+set -uo pipefail
+
+BASE="${CC_BASE_DIR:-$HOME/Fractional}"
+EXECUTE=0
+EXTRA_KEEP=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --execute|--yes|-y) EXECUTE=1 ;;
+    --keep) shift; EXTRA_KEEP="$1" ;;
+    --keep=*) EXTRA_KEEP="${1#--keep=}" ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# ---------- determine keepers (agent-deck active + --keep) ----------
+KEEPERS=()
+while IFS= read -r t; do [ -n "$t" ] && KEEPERS+=("$t"); done < <(
+  agent-deck list -json 2>/dev/null | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin); s=d if isinstance(d,list) else d.get("sessions",[])
+    for x in s:
+        t=x.get("title","")
+        if t: print(t)
+except Exception: pass
+' 2>/dev/null
+)
+if [ -n "$EXTRA_KEEP" ]; then
+  IFS=',' read -ra _ek <<< "$EXTRA_KEEP"
+  for k in "${_ek[@]}"; do KEEPERS+=("$k"); done
+fi
+
+is_keeper(){ local x="$1"; for k in "${KEEPERS[@]:-}"; do [ "$x" = "$k" ] && return 0; done; return 1; }
+
+# keeper worktree paths (from each keeper container's work mount)
+KEEP_WT=()
+for k in "${KEEPERS[@]:-}"; do
+  p=$(docker inspect "$k" --format '{{json .Mounts}}' 2>/dev/null \
+        | tr '{' '\n' | grep '/home/pwuser/work' | grep -o '/[^"]*' | grep -v '/home/pwuser/work' | head -1)
+  [ -n "$p" ] && KEEP_WT+=("$p")
+done
+is_keep_wt(){ local x="$1"; for k in "${KEEP_WT[@]:-}"; do [ "$x" = "$k" ] && return 0; done; return 1; }
+
+echo "########## cc-teardown-idle  (EXECUTE=$EXECUTE) ##########"
+echo "Keepers (${#KEEPERS[@]}): ${KEEPERS[*]:-<none>}"
+echo
+
+# ---------- 1) containers ----------
+echo "===== containers ====="
+stopped=0
+for c in $(docker ps --format '{{.Names}}'); do
+  if is_keeper "$c"; then echo "  KEEP  $c"; continue; fi
+  echo "  STOP  $c"; stopped=$((stopped+1))
+  [ "$EXECUTE" = 1 ] && { cc-stop "$c" >/dev/null 2>&1 || docker rm -f "$c" >/dev/null 2>&1 || true; }
+done
+
+# ---------- 2) worktrees (by exact path) ----------
+echo "===== worktrees ====="
+removed=0; kept=0
+for D in "$BASE"/*/; do
+  D="${D%/}"
+  if   [ -d "$D/.bare" ]; then GA=(--git-dir="$D/.bare")
+  elif [ -e "$D/.git" ];  then GA=(-C "$D")
+  else continue; fi
+  while IFS= read -r line; do
+    case "$line" in worktree\ *) wt="${line#worktree }";; *) continue;; esac
+    [ "$wt" = "$D" ] && continue
+    case "$wt" in "$D"/wt-*) ;; *) continue;; esac
+    if is_keep_wt "$wt"; then echo "  KEEP    $wt"; kept=$((kept+1)); continue; fi
+    dirty=""
+    [ -d "$wt" ] && [ -n "$(cd "$wt" && git status --porcelain 2>/dev/null)" ] && dirty=" [DIRTY]"
+    echo "  REMOVE  $wt$dirty"; removed=$((removed+1))
+    [ "$EXECUTE" = 1 ] && { git "${GA[@]}" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; }
+  done < <(git "${GA[@]}" worktree list --porcelain 2>/dev/null)
+  [ "$EXECUTE" = 1 ] && git "${GA[@]}" worktree prune 2>/dev/null || true
+done
+
+echo
+echo "===== summary ====="
+if [ "$EXECUTE" = 1 ]; then
+  echo "EXECUTED: stopped $stopped containers, removed $removed worktrees, kept $kept keeper worktrees."
+  echo "--- memory now ---"; free -h | grep -E 'Mem|Swap'
+else
+  echo "DRY RUN: would stop $stopped containers, remove $removed worktrees, keep $kept keeper worktrees."
+  echo "Re-run with --execute to apply. Branches are never deleted (they stay in the bare repos)."
+fi

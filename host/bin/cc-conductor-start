@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# cc-conductor-start — launch cc-conductor as its own agent-deck tmux session
+# so it appears in the dashboard alongside work sessions.
+
+set -euo pipefail
+
+SESSION_TITLE="conductor"
+TMUX_SESSION="agentdeck_conductor_$(openssl rand -hex 4)"
+
+if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qE '^agentdeck_conductor_'; then
+  echo "cc-conductor is already running:"
+  tmux list-sessions -F '#{session_name}' | grep -E '^agentdeck_conductor_'
+  exit 0
+fi
+
+# Start the watcher in a detached tmux session
+tmux new-session -d -s "$TMUX_SESSION" "exec cc-conductor"
+
+# Register with agent-deck so it shows in the TUI
+if command -v agent-deck >/dev/null 2>&1; then
+  agent-deck register \
+    --id "$TMUX_SESSION" \
+    --title "$SESSION_TITLE" \
+    --tmux-session "$TMUX_SESSION" \
+    --group infra 2>/dev/null \
+    || echo "warning: failed to register with agent-deck (continuing — tmux session still runs)"
+fi
+
+echo "✓ cc-conductor started"
+echo "  tmux session: $TMUX_SESSION"
+echo "  log:          ~/conductor.log"
+echo "  attach:       tmux attach -t $TMUX_SESSION   (or via agent-deck)"
+echo "  stop:         tmux kill-session -t $TMUX_SESSION"

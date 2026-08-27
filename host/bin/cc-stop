@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# cc-stop — stop a session container (preserves worktree and auth volume)
+# Also de-registers the session from agent-deck.
+# Usage: cc-stop <session-name>
+
+set -euo pipefail
+
+SESSION="${1:?session name required (use cc-list to see running sessions)}"
+
+# Look up agent-deck id by title BEFORE stopping anything
+AGENTDECK_ID=$(agent-deck list -json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    sessions = data if isinstance(data, list) else data.get('sessions', [])
+    for s in sessions:
+        if s.get('title') == '$SESSION':
+            print(s.get('id', ''))
+            break
+except Exception:
+    pass
+" 2>/dev/null || true)
+
+if [[ -n "$AGENTDECK_ID" ]]; then
+  echo "Stopping agent-deck session ($AGENTDECK_ID)..."
+  agent-deck session stop "$AGENTDECK_ID" 2>&1 | grep -v '^$' || true
+fi
+
+if docker ps --format '{{.Names}}' | grep -qx "$SESSION"; then
+  cd /opt/cc-sessions
+  SESSION_NAME="$SESSION" WORKTREE_PATH=/tmp REPO_DIR=/tmp \
+    docker compose -p "$SESSION" down
+else
+  echo "(no running container named '$SESSION')"
+fi
+
+# Kill any leftover plain tmux session (legacy)
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+
+echo "Stopped session '$SESSION'. Worktree and auth volume preserved."
+echo "agent-deck entry kept (use cc-cleanup-worktree to remove it)."

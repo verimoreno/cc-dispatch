@@ -1,0 +1,4 @@
+services:
+  cc-session:
+    environment:
+      - VERCEL_TOKEN=${VERCEL_TOKEN:-}
