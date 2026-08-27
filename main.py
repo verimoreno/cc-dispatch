@@ -451,6 +451,20 @@ def get_host():
     return {"host": REMOTE_HOST or "local"}
 
 
+@app.get("/api/plans")
+def list_plans(verify: bool = False):
+    """Plan Board data: cc-plan's read-only projection of /opt/cc-notes (schema 1).
+    verify=true additionally checks typed UNBLOCKS evidence against git/GitHub."""
+    cmd = ["cc-plan", "json", "--all"] + (["--verify"] if verify else [])
+    result = _run(cmd, timeout=60 if verify else 30)
+    if result.returncode != 0:
+        raise HTTPException(502, f"cc-plan failed: {(result.stderr or '')[:300]}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise HTTPException(502, "cc-plan output was not valid JSON")
+
+
 @app.post("/api/sessions/{session_id}/prompt")
 async def send_prompt(session_id: str, body: dict):
     session = find_session(session_id)

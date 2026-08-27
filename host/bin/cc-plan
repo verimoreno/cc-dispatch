@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""cc-plan — read-only plan projection: PLAN.md + notes + ledger + docker + agent-deck
+-> one machine-readable JSON view per plan (schema 1). The Plan Board and
+cc-supervise render THIS, never ad-hoc markdown parsing.
+
+  cc-plan list                     active plan ids
+  cc-plan json <plan-id> [--verify]  projection for one plan
+  cc-plan json --all [--verify]      all active plans
+  cc-plan verify <plan-id>           evidence check only (exit 1 if any claim fails)
+
+UNBLOCKS grammar v1 (typed, immutable evidence — anything else is a legacy claim
+that releases nothing):
+  UNBLOCKS: <name> pr repo=<owner/repo> number=<N> head=<40-hex-sha>
+  UNBLOCKS: <name> commit repo=<owner/repo> sha=<40-hex-sha> path=<repo-relative-path>
+
+Malformed input is reported as parser_errors — never silently inferred green.
+"""
+import argparse, json, os, re, subprocess, sys, time
+
+NOTES_ROOT = "/opt/cc-notes"
+BASE_DIR = os.environ.get("CC_BASE_DIR", os.path.expanduser("~/Fractional"))
+LEDGER = "/opt/cc-data/ledger"
+STALE_MIN = 120
+
+RE_ENTRY = re.compile(r"^## +(\d{4}-\d{2}-\d{2}T[0-9:]+Z?)\s*$")
+RE_STATUS = re.compile(r"^STATUS: *(working|done|blocked)\s*$")
+RE_PR = re.compile(r"^UNBLOCKS: +(?P<name>[A-Za-z0-9._-]+) +pr +repo=(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)"
+                   r" +number=(?P<number>\d+) +head=(?P<sha>[0-9a-f]{40})\s*$")
+RE_COMMIT = re.compile(r"^UNBLOCKS: +(?P<name>[A-Za-z0-9._-]+) +commit +repo=(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)"
+                       r" +sha=(?P<sha>[0-9a-f]{40}) +path=(?P<path>[^\s]+)\s*$")
+RE_LEGACY = re.compile(r"^UNBLOCKS: *(?P<text>.+)$")
+
+def sh(cmd, timeout=15):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+def epoch(iso):
+    try:
+        return time.mktime(time.strptime(iso.rstrip("Z"), "%Y-%m-%dT%H:%M:%S")) - time.timezone
+    except ValueError:
+        return None
+
+def parse_table(lines):
+    """markdown table -> list of cell-lists (header + separator skipped)."""
+    rows = []
+    for ln in lines:
+        if not ln.strip().startswith("|"): continue
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        if cells and set("".join(cells)) <= set("-: "): continue
+        rows.append(cells)
+    return rows[1:] if rows else []
+
+def parse_plan_md(text, errors):
+    plan = {"goal": None, "status": None, "orchestrator": None, "roster": [], "assignments": []}
+    m = re.search(r"^GOAL: *(.+)$", text, re.M)
+    if m: plan["goal"] = m.group(1).strip()
+    m = re.search(r"^ORCHESTRATOR: *(.+)$", text, re.M)
+    if m: plan["orchestrator"] = m.group(1).strip()
+    m = re.search(r"^STATUS: *(.+)$", text, re.M)
+    if m: plan["status"] = m.group(1).strip()
+    sections = re.split(r"^## +", text, flags=re.M)
+    for sec in sections:
+        name, _, body = sec.partition("\n")
+        rows = parse_table(body.splitlines())
+        if name.strip().lower().startswith("roster"):
+            for r in rows:
+                if len(r) >= 4:
+                    plan["roster"].append({"session": r[0], "repo_branch": r[1],
+                                           "task": r[2], "depends_on": r[3]})
+                else:
+                    errors.append(f"roster row malformed: {r}")
+        elif name.strip().lower().startswith("assignments"):
+            for r in rows:
+                if len(r) >= 2: plan["assignments"].append({"area": r[0], "owner": r[1]})
+                else: errors.append(f"assignments row malformed: {r}")
+    if not plan["status"]: errors.append("PLAN.md: no STATUS line")
+    return plan
+
+def parse_notes(path, errors):
+    entries, cur = [], None
+    try:
+        with open(path) as f: text = f.read()
+    except OSError as e:
+        errors.append(f"{os.path.basename(path)}: unreadable: {e}")
+        return []
+    for ln in text.splitlines():
+        m = RE_ENTRY.match(ln)
+        if m:
+            cur = {"time": m.group(1), "status": None, "unblocks": [], "legacy_unblocks": []}
+            entries.append(cur); continue
+        if cur is None:
+            if ln.strip(): errors.append(f"{os.path.basename(path)}: content before first entry heading")
+            cur = {"time": None, "status": None, "unblocks": [], "legacy_unblocks": []}
+            entries.append(cur)
+        m = RE_STATUS.match(ln)
+        if m: cur["status"] = m.group(1); continue
+        m = RE_PR.match(ln)
+        if m:
+            cur["unblocks"].append({"type": "pr", "name": m["name"], "repo": m["repo"].lower(),
+                                    "number": int(m["number"]), "sha": m["sha"]}); continue
+        m = RE_COMMIT.match(ln)
+        if m:
+            p = m["path"]
+            if p.startswith("/") or ".." in p.split("/"):
+                errors.append(f"{os.path.basename(path)}: unsafe path in UNBLOCKS: {p}")
+            else:
+                cur["unblocks"].append({"type": "commit", "name": m["name"], "repo": m["repo"].lower(),
+                                        "sha": m["sha"], "path": p})
+            continue
+        m = RE_LEGACY.match(ln)
+        if m: cur["legacy_unblocks"].append(m["text"].strip()[:200])
+    return entries
+
+def gh_token():
+    try:
+        with open("/opt/cc-sessions/.env") as f:
+            for ln in f:
+                if ln.startswith("GITHUB_TOKEN="):
+                    return ln.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+def verify_claim(c):
+    """-> (ok: bool|None, reason). None = could not check (treat as unverified)."""
+    if c["type"] == "commit":
+        bare = os.path.join(BASE_DIR, c["repo"].split("/", 1)[1], ".bare")
+        if not os.path.isdir(bare): return None, f"no local bare repo for {c['repo']}"
+        if sh(["git", "--git-dir", bare, "cat-file", "-e", c["sha"] + "^{commit}"]) is None:
+            return False, "commit not present locally"
+        if sh(["git", "--git-dir", bare, "cat-file", "-e", f"{c['sha']}:{c['path']}"]) is None:
+            return False, f"path {c['path']} absent at {c['sha'][:8]}"
+        return True, "commit+path present in local bare repo"
+    tok = gh_token()
+    if not tok: return None, "no GITHUB_TOKEN available"
+    out = sh(["curl", "-sf", "-H", f"Authorization: token {tok}",
+              f"https://api.github.com/repos/{c['repo']}/pulls/{c['number']}"], timeout=20)
+    if out is None: return None, "GitHub API unreachable"
+    try: pr = json.loads(out)
+    except json.JSONDecodeError: return None, "GitHub API response unparseable"
+    head = (pr.get("head") or {}).get("sha", "")
+    if head != c["sha"]:
+        return False, f"PR head is {head[:8]}, claim says {c['sha'][:8]} (force-push or stale claim)"
+    state = pr.get("state"); merged = pr.get("merged", False)
+    return True, f"PR head matches; state={state} merged={merged}"
+
+def ledger_by_session():
+    out = {}
+    if not os.path.isdir(LEDGER): return out
+    for fn in os.listdir(LEDGER):
+        if not fn.endswith(".json"): continue
+        try:
+            with open(os.path.join(LEDGER, fn)) as f: rec = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        cur = rec.get("current")
+        if cur and cur.get("session"): out[cur["session"]] = cur
+    return out
+
+def project(plan_id, verify=False):
+    pdir = os.path.join(NOTES_ROOT, plan_id)
+    errors, contradictions = [], []
+    try:
+        with open(os.path.join(pdir, "PLAN.md")) as f: plan_text = f.read()
+    except OSError as e:
+        return {"schema": 1, "plan": plan_id, "error": f"PLAN.md unreadable: {e}"}
+    plan = parse_plan_md(plan_text, errors)
+    containers = {}
+    out = sh(["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"])
+    for ln in (out or "").splitlines():
+        name, _, status = ln.partition("\t")
+        containers[name] = status
+    deck = set()
+    try:
+        deck = {d.get("title") for d in json.loads(sh(["agent-deck", "ls", "--json"]) or "[]")}
+    except json.JSONDecodeError:
+        errors.append("agent-deck ls unparseable")
+    ledger = ledger_by_session()
+    now = time.time()
+    sessions = []
+    for row in plan["roster"]:
+        name = row["session"]
+        s = {"name": name, "repo_branch": row["repo_branch"], "task": row["task"],
+             "depends_on": row["depends_on"], "planned": name.upper() == "PLANNED",
+             "latest_status": None, "latest_time": None, "note_age_min": None,
+             "unblocks": [], "legacy_unblocks": [], "ledger_state": None,
+             "container": None, "in_deck": None, "state": "unknown"}
+        if s["planned"]:
+            s["state"] = "waiting-to-spawn"; sessions.append(s); continue
+        s["ledger_state"] = (ledger.get(name) or {}).get("state")
+        s["container"] = containers.get(name)
+        s["in_deck"] = name in deck
+        npath = os.path.join(pdir, "notes", f"{name}.md")
+        if os.path.exists(npath):
+            entries = parse_notes(npath, errors)
+            for e in entries:
+                if e["status"]: s["latest_status"], s["latest_time"] = e["status"], e["time"]
+                s["unblocks"] += e["unblocks"]; s["legacy_unblocks"] += e["legacy_unblocks"]
+            if s["latest_time"] and (ep := epoch(s["latest_time"])):
+                s["note_age_min"] = round((now - ep) / 60)
+        else:
+            s["latest_status"] = None
+        st = s["latest_status"]
+        running = s["container"] and s["container"].startswith("Up")
+        if st == "done": s["state"] = "done"
+        elif st == "blocked": s["state"] = "blocked"
+        elif st == "working": s["state"] = "working"
+        elif running: s["state"] = "no-notes-yet"
+        else: s["state"] = "unknown"
+        if st == "working" and not running:
+            contradictions.append({"session": name, "kind": "working-but-no-container",
+                                   "detail": f"latest STATUS working, container: {s['container'] or 'absent'}"})
+        if st == "working" and s["note_age_min"] and s["note_age_min"] > STALE_MIN:
+            contradictions.append({"session": name, "kind": "stale-notes",
+                                   "detail": f"working but last note {s['note_age_min']}min ago"})
+        if st == "done" and not s["unblocks"]:
+            contradictions.append({"session": name, "kind": "done-unverified",
+                                   "detail": "STATUS done with no typed UNBLOCKS evidence"
+                                             + (" (legacy claims only)" if s["legacy_unblocks"] else "")})
+        if verify:
+            for c in s["unblocks"]:
+                ok, reason = verify_claim(c)
+                c["verified"], c["verify_reason"] = ok, reason
+                if ok is False:
+                    contradictions.append({"session": name, "kind": "evidence-failed",
+                                           "detail": f"{c['name']}: {reason}"})
+        sessions.append(s)
+    return {"schema": 1, "plan": plan_id, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "status": plan["status"], "goal": plan["goal"], "orchestrator": plan["orchestrator"],
+            "sessions": sessions, "assignments": plan["assignments"],
+            "contradictions": contradictions, "parser_errors": errors}
+
+def active_plans():
+    if not os.path.isdir(NOTES_ROOT): return []
+    return sorted(d for d in os.listdir(NOTES_ROOT)
+                  if os.path.isfile(os.path.join(NOTES_ROOT, d, "PLAN.md")) and d != "archive")
+
+def main():
+    p = argparse.ArgumentParser(prog="cc-plan")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list")
+    j = sub.add_parser("json")
+    j.add_argument("plan", nargs="?"); j.add_argument("--all", action="store_true")
+    j.add_argument("--verify", action="store_true")
+    v = sub.add_parser("verify"); v.add_argument("plan")
+    a = p.parse_args()
+    if a.cmd == "list":
+        for pl in active_plans(): print(pl)
+    elif a.cmd == "json":
+        if a.all:
+            json.dump([project(pl, a.verify) for pl in active_plans()], sys.stdout, indent=1)
+        elif a.plan:
+            json.dump(project(a.plan, a.verify), sys.stdout, indent=1)
+        else:
+            p.error("json needs a plan id or --all")
+        print()
+    elif a.cmd == "verify":
+        proj = project(a.plan, verify=True)
+        bad = [c for c in proj.get("contradictions", []) if c["kind"] in ("evidence-failed", "done-unverified")]
+        for c in bad: print(f"{c['session']}: {c['kind']}: {c['detail']}")
+        claims = [u for s in proj.get("sessions", []) for u in s["unblocks"]]
+        for u in claims:
+            print(f"{u['name']} [{u['type']}] verified={u.get('verified')} — {u.get('verify_reason')}")
+        sys.exit(1 if bad else 0)
+
+if __name__ == "__main__":
+    main()

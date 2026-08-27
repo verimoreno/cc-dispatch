@@ -79,7 +79,15 @@ in step 4, when A's notes say so.
 
 ## 3. Poll the plan
 
-One SSH round-trip gives the whole picture:
+One SSH round-trip gives the whole machine-parsed picture — roster × notes ×
+ledger × containers, with contradictions precomputed (`cc-plan` on the host):
+
+```bash
+ssh cc-host 'cc-plan json PLAN_ID'          # add --verify to also check UNBLOCKS evidence
+```
+
+The same data renders visually at the dispatch Plan Board: `http://cc-host:7822/plans.html`.
+Raw-notes fallback (cc-plan unavailable):
 
 ```bash
 ssh cc-host 'cd /opt/cc-notes/PLAN_ID && \
@@ -99,13 +107,23 @@ PLAN_ID and spawn any newly-unblocked sessions`).
 
 ## 4. Release dependencies
 
-When a poll shows the awaited `UNBLOCKS: <thing>` (or `STATUS: done`) from A:
+Protocol v1: an `UNBLOCKS:` claim is **typed evidence**, not prose. Workers write
+exactly one of (single spaces, full 40-hex SHA):
 
-1. Verify the deliverable is real (branch pushed / PR exists / file present) —
-   trust but verify, agents write `done` optimistically.
-2. Spawn B via [[cc-spawn-session]], its prompt naming the plan dir AND what
-   just landed: `A finished <thing> (see /opt/cc-notes/PLAN_ID/notes/A.md).`
-3. Log it in PLAN.md's `## Log`.
+```
+UNBLOCKS: <artifact-name> pr repo=<owner/name> number=<N> head=<40-hex-sha>
+UNBLOCKS: <artifact-name> commit repo=<owner/name> sha=<40-hex-sha> path=<repo-relative-path>
+```
+
+When a poll shows the awaited claim (or `STATUS: done`) from A:
+
+1. **Verify mechanically**: `ssh cc-host 'cc-plan verify PLAN_ID'` — checks PR
+   head SHA against GitHub (catches force-pushes) and commit+path against the
+   local bare repo. `STATUS: done` with no well-formed claim is *done-unverified*
+   and releases NOTHING; free text after `UNBLOCKS:` is a legacy claim, same rule.
+2. Spawn B via [[cc-spawn-session]], its prompt naming the plan dir AND the
+   verified artifact identity (repo + SHA), not just "A is done".
+3. Log the release (artifact, SHA, verified time) in PLAN.md's `## Log`.
 
 ## 5. Close & archive
 

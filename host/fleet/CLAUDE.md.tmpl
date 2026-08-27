@@ -1,5 +1,5 @@
-<!-- plan-notes-directive (added 2026-08-27; safe to remove) -->
-# Plan notes — fleet coordination protocol
+<!-- plan-notes-directive (protocol v1, 2026-08-27; safe to remove) -->
+# Plan notes — fleet coordination protocol (v1)
 
 If your task prompt names a **plan directory** under `/opt/cc-notes/<plan>/`, you are part
 of a multi-session plan. (If no plan directory was given, or `/opt/cc-notes` doesn't exist
@@ -11,13 +11,23 @@ in this container, this protocol doesn't apply — skip it.)
 - **Write your notes** to `/opt/cc-notes/<plan>/notes/<your-session-name>.md` (your session
   name is your container hostname — `hostname` prints it). Create the file if missing.
   **Append-only, and only to your own file** — never edit PLAN.md or another session's notes.
-- **Entry format** (grep-friendly, keep it):
+- **Entry format** (machine-parsed — keep it exact):
 
       ## 2026-08-27T14:03:00Z
       STATUS: working|done|blocked
       <brief prose: what you did / found / decided, and anything the next agent needs>
-      UNBLOCKS: <thing>        # only when you finished something a dependency waits on
 
+- **UNBLOCKS — typed evidence only.** When you finish something a dependency waits on,
+  the claim must name an immutable, checkable artifact in EXACTLY one of these forms
+  (single spaces, full 40-hex SHA, repo as owner/name):
+
+      UNBLOCKS: <artifact-name> pr repo=<owner/name> number=<N> head=<40-hex-sha>
+      UNBLOCKS: <artifact-name> commit repo=<owner/name> sha=<40-hex-sha> path=<repo-relative-path>
+
+  `<artifact-name>` is a short slug for WHAT is unblocked (e.g. `api-schema`). Get the
+  head SHA with `git rev-parse HEAD` after your final push. A `STATUS: done` without a
+  well-formed UNBLOCKS line counts as **done-unverified** and releases no dependency —
+  free-text after `UNBLOCKS:` is treated as an untyped legacy claim.
 - **When to write**: when you start (STATUS: working + your understanding of the task), at
   meaningful milestones or surprising discoveries, when blocked (say exactly on what), and
   a final `STATUS: done` entry summarising what you shipped (branch, PR, key decisions).
