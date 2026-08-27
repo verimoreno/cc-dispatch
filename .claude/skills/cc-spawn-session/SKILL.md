@@ -29,6 +29,11 @@ per `cc-docker-host-setup`.
   Charset: letters, digits, `.` `_` `/` `-`; must not start with `-` or `/`.
 - **prompt** — the task. If Veri gave a wearefractional task ID, use the
   from-task prompt template at the bottom instead of pasting the whole task in.
+- **plan** (optional) — a plan id under `/opt/cc-notes` (see [[cc-plan-notes]]).
+  When set, prepend to the prompt:
+  `You are part of plan /opt/cc-notes/<plan>/ — follow the plan-notes protocol in your CLAUDE.md before starting.`
+  and register the session in that plan's PLAN.md roster after step 3. Only
+  containers spawned after 2026-08-27 have the `/opt/cc-notes` mount.
 
 **Name-length budget (hard constraint):** cc-spawn names the container AND its
 hostname `<repo-name>-<branch with / → ->`, and Docker rejects hostnames over
