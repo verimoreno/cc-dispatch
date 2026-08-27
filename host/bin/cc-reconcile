@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""cc-reconcile — read-only cross-check of ledger × docker × agent-deck (Wave 2).
+
+Default: report mismatches, change nothing. Operator repairs are explicit and
+audited to /opt/cc-data/ledger/audit.log:
+
+  cc-reconcile                          report
+  cc-reconcile --fail-attempt ID [--msg M]   mark a stuck attempt failed
+  cc-reconcile --adopt ID --container CID    attach an orphan container to an attempt
+"""
+import argparse, json, os, subprocess, sys, time
+
+LEDGER = "/opt/cc-data/ledger"
+AUDIT = os.path.join(LEDGER, "audit.log")
+TERMINAL = {"done", "failed", "abandoned"}
+
+def sh(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+def audit(line):
+    with open(AUDIT, "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {os.environ.get('USER','?')} {line}\n")
+
+def records():
+    if not os.path.isdir(LEDGER): return
+    for fn in sorted(os.listdir(LEDGER)):
+        if not fn.endswith(".json"): continue
+        try:
+            with open(os.path.join(LEDGER, fn)) as f:
+                yield fn, json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"CORRUPT: {fn}: {e}")
+
+def owner_alive(att):
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            if att.get("boot_id") != f.read().strip(): return False
+        os.kill(int(att.get("pid", -1)), 0); return True
+    except Exception:
+        return False
+
+def main():
+    p = argparse.ArgumentParser(prog="cc-reconcile")
+    p.add_argument("--fail-attempt"); p.add_argument("--msg", default="operator repair")
+    p.add_argument("--adopt"); p.add_argument("--container")
+    a = p.parse_args()
+
+    if a.fail_attempt:
+        r = subprocess.run(["cc-ledger", "set", a.fail_attempt, "failed",
+                            "--stage", "reconcile", "--msg", a.msg])
+        if r.returncode == 0: audit(f"fail-attempt {a.fail_attempt}: {a.msg}")
+        sys.exit(r.returncode)
+    if a.adopt:
+        if not a.container: sys.exit("--adopt needs --container")
+        r = subprocess.run(["cc-ledger", "set", a.adopt, "starting", "--container", a.container])
+        if r.returncode == 0: audit(f"adopt {a.adopt} container={a.container}")
+        sys.exit(r.returncode)
+
+    # -- gather ---------------------------------------------------------------
+    containers = {}   # name -> {id, labeled, status}
+    for line in sh(["docker", "ps", "-a", "--format",
+                    '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Label "com.fractional.cc-fleet"}}\t{{.Image}}']).splitlines():
+        cid, name, status, label, image = (line.split("\t") + [""] * 5)[:5]
+        if label == "session" or image.startswith("cc-session"):
+            containers[name] = {"id": cid, "labeled": label == "session", "status": status}
+    deck = []
+    try:
+        deck = json.loads(sh(["agent-deck", "ls", "--json"]) or "[]")
+    except json.JSONDecodeError:
+        print("WARN: agent-deck ls unparseable")
+
+    ledgered_sessions, findings = set(), 0
+    for fn, rec in records():
+        cur = rec.get("current")
+        if not cur or cur["state"] in TERMINAL: continue
+        ledgered_sessions.add(cur.get("session"))
+        cid = cur.get("container_id")
+        age_min = (time.time() - cur.get("epoch", 0)) / 60
+        if cur["state"] in ("requested", "starting") and not owner_alive(cur) and not (
+                cid and any(c["id"].startswith(cid[:12]) for c in containers.values())):
+            print(f"STALE: attempt {cur['attempt_id']} {cur['repo']}@{cur['ref']} "
+                  f"state={cur['state']} owner dead, no container, {age_min:.0f}min old "
+                  f"-> cc-reconcile --fail-attempt {cur['attempt_id']}")
+            findings += 1
+        if cur["state"] in ("running", "stopping") and cid and not any(
+                c["id"].startswith(cid[:12]) for c in containers.values()):
+            print(f"GONE: attempt {cur['attempt_id']} session={cur.get('session')} "
+                  f"state={cur['state']} but container {cid[:12]} not resident "
+                  f"-> cc-reconcile --fail-attempt {cur['attempt_id']} (or set-by-session done)")
+            findings += 1
+    for name, c in sorted(containers.items()):
+        if name not in ledgered_sessions:
+            tag = "legacy (pre-ledger)" if not c["labeled"] else "UNLEDGERED"
+            print(f"{'NOTE' if not c['labeled'] else 'ORPHAN'}: container {name} "
+                  f"[{c['status']}] has no active reservation — {tag}")
+            findings += c["labeled"]
+    deck_titles = {d.get("title") for d in deck}
+    for d in deck:
+        if d.get("title") not in containers:
+            print(f"DECK-ORPHAN: agent-deck entry '{d.get('title')}' has no resident container")
+            findings += 1
+    for name in containers:
+        if name not in deck_titles:
+            print(f"DECK-MISSING: container {name} not registered in agent-deck")
+            findings += 1
+    print(f"{'OK: fleet, ledger and agent-deck agree' if findings == 0 else f'{findings} finding(s)'}")
+    sys.exit(0 if findings == 0 else 1)
+
+if __name__ == "__main__":
+    main()

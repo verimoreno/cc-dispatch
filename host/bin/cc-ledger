@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""cc-ledger — durable spawn reservation ledger + admission control (Wave 2).
+
+The single admission point for every fleet spawn path (cc-spawn, cc-arch,
+cc-code, cc-codex). One JSON file per repo+ref key under /opt/cc-data/ledger/,
+all reads/writes under the host-global spawn lock. Fail-closed: any probe
+error refuses admission.
+
+  cc-ledger admit --session S --repo owner/name --ref BRANCH --mem GB [--requester R]
+      -> prints attempt_id; exit 2 with reason on stderr if refused
+  cc-ledger set ATTEMPT_ID STATE [--container ID] [--tmux TS] [--stage S] [--msg M]
+  cc-ledger set-by-session SESSION_NAME STATE [--stage S] [--msg M]
+  cc-ledger list [--all]
+  cc-ledger show KEY_OR_SESSION
+
+States: requested -> starting -> running -> stopping -> done | failed | abandoned
+Budgets (env-overridable): CC_ADMIT_GB=48 CC_MAX_SESSIONS=12 CC_MAX_STARTS=2
+"""
+import argparse, fcntl, hashlib, json, os, subprocess, sys, time, uuid
+
+LEDGER = "/opt/cc-data/ledger"
+LOCK = "/opt/cc-data/spawn.lock"
+BASE_DIR = os.environ.get("CC_BASE_DIR", os.path.expanduser("~/Fractional"))
+STATES = ["requested", "starting", "running", "stopping", "done", "failed", "abandoned"]
+TERMINAL = {"done", "failed", "abandoned"}
+STALE_SECS = 30 * 60
+
+def die(msg, code=1):
+    print(f"ERROR: {msg}", file=sys.stderr); sys.exit(code)
+
+def now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+def boot_id():
+    with open("/proc/sys/kernel/random/boot_id") as f:
+        return f.read().strip()
+
+def key_for(repo, ref):
+    return hashlib.sha256(f"{repo}\n{ref}".encode()).hexdigest()[:24]
+
+def path_for(key):
+    return os.path.join(LEDGER, key + ".json")
+
+def load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as e:
+        die(f"ledger record corrupt/unreadable: {path}: {e}")
+
+def store(path, rec):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rec, f, indent=1)
+        f.flush(); os.fsync(f.fileno())
+    os.rename(tmp, path)
+    dfd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try: os.fsync(dfd)
+    finally: os.close(dfd)
+
+def all_records():
+    for fn in sorted(os.listdir(LEDGER)):
+        if fn.endswith(".json"):
+            rec = load(os.path.join(LEDGER, fn))
+            if rec: yield rec
+
+def owner_alive(att):
+    if att.get("boot_id") != boot_id(): return False
+    try: os.kill(int(att.get("pid", -1)), 0); return True
+    except (ProcessLookupError, PermissionError, ValueError, OverflowError):
+        return False
+
+def run(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"probe failed ({' '.join(cmd[:3])}): {r.stderr.strip()[:200]}")
+    return r.stdout
+
+def fleet_containers():
+    """[{id, mem_gb, labeled}] for resident fleet containers (running/created/restarting)."""
+    ids = set()
+    for filt in (["--filter", "label=com.fractional.cc-fleet=session"],
+                 ["--filter", "ancestor=cc-session:latest"]):
+        for st in ("running", "created", "restarting"):
+            out = run(["docker", "ps", "-aq"] + filt + ["--filter", f"status={st}"])
+            ids.update(x for x in out.split() if x)
+    out_list = []
+    for cid in ids:
+        out = run(["docker", "inspect", "--format",
+                   '{{.HostConfig.Memory}} {{index .Config.Labels "com.fractional.cc-fleet"}}', cid])
+        mem_s, _, lab = out.strip().partition(" ")
+        labeled = lab.strip() == "session"
+        mem = int(mem_s) if mem_s.isdigit() else 0
+        gb = (mem + (1 << 30) - 1) // (1 << 30) if (labeled and mem > 0) else 4
+        out_list.append({"id": cid, "mem_gb": gb, "labeled": labeled})
+    return out_list
+
+def container_alive(cid):
+    r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", cid],
+                       capture_output=True, text=True)
+    return r.returncode == 0 and r.stdout.strip() in ("running", "created", "restarting")
+
+class locked:
+    def __enter__(self):
+        os.makedirs(LEDGER, exist_ok=True)
+        self.f = open(LOCK, "w")
+        deadline = time.time() + 30
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB); return self
+            except BlockingIOError:
+                if time.time() > deadline: die("spawn lock timeout")
+                time.sleep(0.2)
+    def __exit__(self, *a):
+        fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+
+def admit(a):
+    admit_gb = int(os.environ.get("CC_ADMIT_GB", 48))
+    max_sessions = int(os.environ.get("CC_MAX_SESSIONS", 12))
+    max_starts = int(os.environ.get("CC_MAX_STARTS", 2))
+    req = a.mem
+    if not (2 <= req <= 8): die(f"--mem must be 2..8 (got {req})", 2)
+    repo = a.repo.strip().lower()
+    if repo.count("/") != 1 or not all(repo.split("/")): die(f"--repo must be owner/name (got '{a.repo}')", 2)
+    key = key_for(repo, a.ref)
+    with locked():
+        path = path_for(key)
+        rec = load(path)
+        if rec and rec["current"]["state"] not in TERMINAL:
+            cur = rec["current"]
+            cid = cur.get("container_id")
+            live = container_alive(cid) if cid else False
+            age = time.time() - cur.get("epoch", 0)
+            if not live and not owner_alive(cur) and age > STALE_SECS:
+                cur["state"] = "abandoned"; cur.setdefault("times", {})["abandoned"] = now()
+                cur["fail"] = {"stage": "stale", "msg": "superseded: owner dead, no container"}
+                rec.setdefault("history", []).append(cur)
+                rec["history"] = rec["history"][-5:]
+                rec["current"] = None
+            else:
+                die(f"reservation exists for {repo}@{a.ref}: attempt {cur['attempt_id']} "
+                    f"state={cur['state']} session={cur.get('session')}", 2)
+        containers = fleet_containers()
+        if len(containers) >= max_sessions:
+            die(f"fleet full: {len(containers)}/{max_sessions} resident sessions", 2)
+        active = [r["current"] for r in all_records()
+                  if r.get("current") and r["current"]["state"] in ("requested", "starting")]
+        if len(active) >= max_starts:
+            die(f"{len(active)} spawns already starting (max {max_starts})", 2)
+        sum_gb = sum(c["mem_gb"] for c in containers)
+        sum_gb += sum(x.get("mem_gb", 4) for x in active if not x.get("container_id"))
+        if sum_gb + req > admit_gb:
+            die(f"admitted memory {sum_gb}G + {req}G request exceeds {admit_gb}G budget", 2)
+        with open("/proc/meminfo") as f:
+            avail_kb = next((int(l.split()[1]) for l in f if l.startswith("MemAvailable")), None)
+        if not avail_kb: die("cannot read MemAvailable")
+        if avail_kb // (1 << 20) - req < 8:
+            die(f"only {avail_kb >> 20}G actually free; need {req}G + 8G emergency floor", 2)
+        for fs in (BASE_DIR, "/"):
+            st = os.statvfs(fs)
+            if st.f_bavail * st.f_frsize < 30 * (1 << 30): die(f"<30G disk free on {fs}", 2)
+            if st.f_favail < 500_000: die(f"<500k inodes free on {fs}", 2)
+        att = {"attempt_id": uuid.uuid4().hex[:12], "state": "requested",
+               "session": a.session, "repo": repo, "ref": a.ref, "mem_gb": req,
+               "requester": a.requester, "pid": os.getppid(), "boot_id": boot_id(),
+               "epoch": int(time.time()), "times": {"requested": now()},
+               "container_id": None, "tmux": None, "fail": None}
+        rec = {"key_repo": repo, "key_ref": a.ref,
+               "current": att, "history": (rec or {}).get("history", [])}
+        store(path, rec)
+        print(att["attempt_id"])
+
+def find_attempt(pred):
+    for rec in all_records():
+        cur = rec.get("current")
+        if cur and pred(cur):
+            return rec
+    return None
+
+def transition(rec, state, a):
+    cur = rec["current"]
+    if cur["state"] in TERMINAL:
+        die(f"attempt {cur['attempt_id']} already terminal ({cur['state']})")
+    if state not in STATES: die(f"unknown state '{state}'")
+    if state not in TERMINAL and STATES.index(state) <= STATES.index(cur["state"]):
+        die(f"cannot go {cur['state']} -> {state}")
+    cur["state"] = state
+    cur.setdefault("times", {})[state] = now()
+    if getattr(a, "container", None): cur["container_id"] = a.container
+    if getattr(a, "tmux", None): cur["tmux"] = a.tmux
+    if state in ("failed", "abandoned"):
+        cur["fail"] = {"stage": getattr(a, "stage", None) or "unknown",
+                       "msg": getattr(a, "msg", None) or ""}
+    store(path_for(key_for(rec["key_repo"], rec["key_ref"])), rec)
+
+def main():
+    p = argparse.ArgumentParser(prog="cc-ledger")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    ad = sub.add_parser("admit")
+    for f in ("--session", "--repo", "--ref"): ad.add_argument(f, required=True)
+    ad.add_argument("--mem", type=int, required=True)
+    ad.add_argument("--requester", default="unknown")
+    se = sub.add_parser("set")
+    se.add_argument("attempt"); se.add_argument("state")
+    for f in ("--container", "--tmux", "--stage", "--msg"): se.add_argument(f)
+    sb = sub.add_parser("set-by-session")
+    sb.add_argument("session"); sb.add_argument("state")
+    for f in ("--stage", "--msg"): sb.add_argument(f)
+    ls = sub.add_parser("list"); ls.add_argument("--all", action="store_true")
+    sh = sub.add_parser("show"); sh.add_argument("what")
+    a = p.parse_args()
+
+    if a.cmd == "admit":
+        admit(a)
+    elif a.cmd == "set":
+        with locked():
+            rec = find_attempt(lambda c: c["attempt_id"] == a.attempt)
+            if not rec: die(f"no active attempt {a.attempt}")
+            transition(rec, a.state, a)
+    elif a.cmd == "set-by-session":
+        with locked():
+            rec = find_attempt(lambda c: c.get("session") == a.session and c["state"] not in TERMINAL)
+            if not rec: die(f"no active attempt for session {a.session}")
+            transition(rec, a.state, a)
+    elif a.cmd == "list":
+        os.makedirs(LEDGER, exist_ok=True)
+        for rec in all_records():
+            cur = rec.get("current")
+            if not cur: continue
+            if not a.all and cur["state"] in TERMINAL: continue
+            print(f"{cur['attempt_id']}  {cur['state']:9}  {cur['repo']}@{cur['ref']}  "
+                  f"{cur.get('session','-')}  {cur['mem_gb']}g  {cur['times'].get('requested','')}")
+    elif a.cmd == "show":
+        rec = find_attempt(lambda c: a.what in (c["attempt_id"], c.get("session"))) \
+              or load(path_for(a.what)) or load(os.path.join(LEDGER, a.what + ".json"))
+        if not rec: die(f"nothing found for '{a.what}'")
+        json.dump(rec, sys.stdout, indent=1); print()
+
+if __name__ == "__main__":
+    main()

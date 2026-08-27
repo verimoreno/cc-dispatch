@@ -88,7 +88,13 @@ check(){
 
 validate(){
   local f
-  for f in "$HOST_DIR"/bin/*; do bash -n "$f" || die "syntax: $f"; done
+  for f in "$HOST_DIR"/bin/*; do
+    case "$(head -1 "$f")" in
+      *bash*)    bash -n "$f" || die "syntax: $f" ;;
+      *python3*) python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f" || die "syntax: $f" ;;
+      *)         die "unknown interpreter in $f" ;;
+    esac
+  done
   local cfg
   cfg=$(SESSION_NAME=validate REPO_DIR=/tmp WORKTREE_PATH=/tmp \
         docker compose -f "$HOST_DIR/sessions/docker-compose.yml" config 2>/dev/null) \

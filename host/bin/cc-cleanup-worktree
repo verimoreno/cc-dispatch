@@ -47,6 +47,9 @@ if [[ -n "$AGENTDECK_ID" ]]; then
   agent-deck rm "$AGENTDECK_ID" 2>&1 | grep -v '^$' || echo "  WARN: agent-deck rm failed"
 fi
 
+# Best-effort ledger transition to done (session name is lowercased in the ledger)
+cc-ledger set-by-session "$(echo "$SESSION_NAME" | tr 'A-Z' 'a-z')" done >/dev/null 2>&1 || true
+
 if [[ ! -d "$BARE_DIR" ]]; then
   echo "ERROR: no bare repo at $BARE_DIR"
   exit 1
