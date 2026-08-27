@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""cc-github-token — mint a short-lived, single-repo GitHub App installation token.
+
+  cc-github-token <owner/repo>     -> prints a token scoped to THAT repo, ~1h TTL
+
+Needs a GitHub App (one-time setup, see docs/scoped-github-tokens.md) configured in
+/opt/cc-sessions/github-app.env:
+    GITHUB_APP_ID=123456
+    GITHUB_APP_KEY=/opt/cc-sessions/github-app.pem   # App private key, chmod 600
+
+Exit codes: 0 token printed · 3 not configured (caller should fall back) · 1 error.
+Signing uses the openssl CLI (RS256) so no third-party python deps are needed.
+"""
+import base64, json, os, subprocess, sys, tempfile, time
+
+CONF = "/opt/cc-sessions/github-app.env"
+API = "https://api.github.com"
+
+def die(msg, code=1):
+    print(f"cc-github-token: {msg}", file=sys.stderr); sys.exit(code)
+
+def b64u(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+def conf():
+    if not os.path.isfile(CONF): die("no github-app.env — App not configured", 3)
+    c = {}
+    with open(CONF) as f:
+        for ln in f:
+            ln = ln.strip()
+            if ln and not ln.startswith("#") and "=" in ln:
+                k, _, v = ln.partition("="); c[k.strip()] = v.strip()
+    app_id, key = c.get("GITHUB_APP_ID"), c.get("GITHUB_APP_KEY")
+    if not app_id or not key: die("github-app.env lacks GITHUB_APP_ID/GITHUB_APP_KEY", 3)
+    if not os.path.isfile(key): die(f"App key not found: {key}", 3)
+    return app_id, key
+
+def jwt(app_id, keyfile):
+    now = int(time.time())
+    header = b64u(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    payload = b64u(json.dumps({"iat": now - 60, "exp": now + 540, "iss": app_id}).encode())
+    signing_input = f"{header}.{payload}".encode()
+    with tempfile.NamedTemporaryFile() as tf:
+        tf.write(signing_input); tf.flush()
+        r = subprocess.run(["openssl", "dgst", "-sha256", "-sign", keyfile, tf.name],
+                           capture_output=True)
+    if r.returncode != 0: die(f"openssl signing failed: {r.stderr.decode()[:200]}")
+    return f"{header}.{payload}.{b64u(r.stdout)}"
+
+def api(path, token, method="GET", body=None):
+    cmd = ["curl", "-sf", "-X", method, "-H", f"Authorization: Bearer {token}",
+           "-H", "Accept: application/vnd.github+json", f"{API}{path}"]
+    if body is not None:
+        cmd += ["-d", json.dumps(body)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    if r.returncode != 0: return None
+    try: return json.loads(r.stdout)
+    except json.JSONDecodeError: return None
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1].count("/") != 1:
+        die("usage: cc-github-token <owner/repo>")
+    owner_repo = sys.argv[1].strip().lower()
+    repo_name = owner_repo.split("/")[1]
+    app_id, keyfile = conf()
+    j = jwt(app_id, keyfile)
+    inst = api(f"/repos/{owner_repo}/installation", j)
+    if not inst or "id" not in inst:
+        die(f"App is not installed on {owner_repo} (install it in GitHub → App settings)", 3)
+    tok = api(f"/app/installations/{inst['id']}/access_tokens", j, "POST",
+              {"repositories": [repo_name],
+               "permissions": {"contents": "write", "pull_requests": "write", "workflows": "write"}})
+    if not tok or "token" not in tok:
+        die("token mint failed (permissions or API error)")
+    print(tok["token"])
+
+if __name__ == "__main__":
+    main()

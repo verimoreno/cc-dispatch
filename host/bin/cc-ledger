@@ -18,8 +18,8 @@ Budgets (env-overridable): CC_ADMIT_GB=48 CC_MAX_SESSIONS=12 CC_MAX_STARTS=2
 """
 import argparse, fcntl, hashlib, json, os, subprocess, sys, time, uuid
 
-LEDGER = "/opt/cc-data/ledger"
-LOCK = "/opt/cc-data/spawn.lock"
+LEDGER = os.environ.get("CC_LEDGER_DIR", "/opt/cc-data/ledger")
+LOCK = os.environ.get("CC_SPAWN_LOCK", "/opt/cc-data/spawn.lock")
 BASE_DIR = os.environ.get("CC_BASE_DIR", os.path.expanduser("~/Fractional"))
 STATES = ["requested", "starting", "running", "stopping", "done", "failed", "abandoned"]
 TERMINAL = {"done", "failed", "abandoned"}
@@ -167,8 +167,10 @@ def admit(a):
                "requester": a.requester, "pid": os.getppid(), "boot_id": boot_id(),
                "epoch": int(time.time()), "times": {"requested": now()},
                "container_id": None, "tmux": None, "fail": None}
-        rec = {"key_repo": repo, "key_ref": a.ref,
-               "current": att, "history": (rec or {}).get("history", [])}
+        history = (rec or {}).get("history", [])
+        if rec and rec.get("current"):
+            history = (history + [rec["current"]])[-5:]
+        rec = {"key_repo": repo, "key_ref": a.ref, "current": att, "history": history}
         store(path, rec)
         print(att["attempt_id"])
 
