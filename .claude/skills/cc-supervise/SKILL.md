@@ -100,6 +100,25 @@ Then a one-line summary: `N sessions · X need you (pr-red/waiting/stuck) · Y h
 If run under `/loop`, only speak up when the "need you" count is > 0 or changed
 since last tick — silent ticks when everything's healthy.
 
+## Plan-aware pass (v2, 2026-08-27)
+
+After the per-session table, check the multi-session plans:
+
+```bash
+ssh cc-host 'cc-plan list'                       # active plans in /opt/cc-notes
+ssh cc-host 'cc-plan json <plan> --verify'       # per plan: roster × notes × ledger × evidence
+```
+
+Report each plan's `contradictions` array verbatim — the projection already
+computes the joins, so do NOT re-derive them from pane text. The kinds:
+`working-but-no-container` (agent believes it's working, container is gone),
+`stale-notes` (working but silent >2h), `done-unverified` (STATUS done with no
+typed UNBLOCKS evidence — the dependency must NOT be released), and
+`evidence-failed` (claim's SHA no longer matches — force-push or stale claim).
+`parser_errors` mean a worker broke protocol v1 — report as "unknown", never
+infer green. Cross-check against `cc-reconcile` when ledger states look off.
+The same data is visual at `http://cc-host:7822/plans.html` (Plan Board).
+
 ## Notes & guardrails
 
 - **Green CI is the only real success signal.** A repo with no CI can't be

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan Board</title>
+<style>
+  :root{
+    --bg:#12181E; --panel:#1A222A; --ink:#E4E9ED; --muted:#8B98A5; --line:#2C3641;
+    --working:#43AEB7; --done:#5DBB63; --blocked:#E06C5C; --wait:#8B98A5; --warn:#D89A4E;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#F4F6F7; --panel:#FFF; --ink:#1B232C; --muted:#5A6673; --line:#D8DEE3;
+           --working:#0E7C86; --done:#2E7D32; --blocked:#C62828; --wait:#5A6673; --warn:#B0742C; }
+  }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 "IBM Plex Sans",system-ui,sans-serif;padding:24px}
+  h1{font-size:22px;margin:0 0 4px} .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .plan{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin-bottom:22px}
+  .plan h2{margin:0;font-size:17px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .badge{font:600 10.5px/1 ui-monospace,monospace;letter-spacing:.05em;padding:4px 9px;
+    border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .goal{color:var(--muted);font-size:13.5px;margin:.4em 0 1em;max-width:80ch}
+  .board{position:relative;display:flex;gap:56px;align-items:flex-start;overflow-x:auto;padding:8px 4px}
+  .col{display:flex;flex-direction:column;gap:14px;min-width:230px}
+  .sess{border:1.5px solid var(--wait);border-radius:10px;padding:10px 13px;background:var(--bg);position:relative}
+  .sess .nm{font:600 12.5px ui-monospace,monospace;word-break:break-all}
+  .sess .tk{font-size:12px;color:var(--muted);margin-top:3px}
+  .sess .meta{font:11px ui-monospace,monospace;color:var(--muted);margin-top:6px}
+  .sess.working{border-color:var(--working)} .sess.working .st{color:var(--working)}
+  .sess.done{border-color:var(--done)} .sess.done .st{color:var(--done)}
+  .sess.blocked{border-color:var(--blocked)} .sess.blocked .st{color:var(--blocked)}
+  .sess.waiting-to-spawn{border-style:dashed;opacity:.75}
+  .st{font:600 11px ui-monospace,monospace;letter-spacing:.05em;text-transform:uppercase}
+  svg.edges{position:absolute;inset:0;pointer-events:none;overflow:visible}
+  .contras{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+  .contras div{font:12.5px ui-monospace,monospace;color:var(--warn);margin:3px 0}
+  .perr div{font:12px ui-monospace,monospace;color:var(--blocked);margin:2px 0}
+  .empty{color:var(--muted)} .err{color:var(--blocked)}
+  a{color:var(--working)}
+</style>
+</head>
+<body>
+<h1>Plan Board</h1>
+<div class="sub">read-only view of /opt/cc-notes · <span id="stamp">loading…</span> ·
+  auto-refresh 30s · <a href="/">dashboard</a></div>
+<div id="root"></div>
+<script>
+"use strict";
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+
+function depth(sess, all, seen) {
+  if (seen.has(sess.name)) return 0;              // cycle guard
+  seen.add(sess.name);
+  const dep = (sess.depends_on || "").trim();
+  if (!dep || dep === "—" || dep === "-") return 0;
+  let d = 0;
+  for (const other of all)
+    if (other.name !== sess.name && other.name && dep.includes(other.name))
+      d = Math.max(d, 1 + depth(other, all, seen));
+  return d;
+}
+
+function renderPlan(p) {
+  const card = el("div", "plan");
+  const h = el("h2"); h.append(el("span", null, p.plan), el("span", "badge", p.status || "?"));
+  if (p.orchestrator) h.append(el("span", "badge", "orch: " + p.orchestrator));
+  card.append(h);
+  if (p.error) { card.append(el("div", "err", p.error)); return card; }
+  if (p.goal) card.append(el("div", "goal", p.goal));
+
+  const board = el("div", "board");
+  const cols = new Map(), boxes = new Map();
+  for (const s of p.sessions || []) {
+    const d = depth(s, p.sessions, new Set());
+    if (!cols.has(d)) cols.set(d, el("div", "col"));
+    const box = el("div", "sess " + (s.state || "unknown"));
+    box.append(el("div", "st", s.state || "unknown"));
+    box.append(el("div", "nm", s.name));
+    if (s.task) box.append(el("div", "tk", s.task));
+    const bits = [];
+    if (s.repo_branch) bits.push(s.repo_branch);
+    if (s.note_age_min != null) bits.push(`note ${s.note_age_min}m ago`);
+    if (s.ledger_state) bits.push(`ledger:${s.ledger_state}`);
+    if (s.container) bits.push(s.container.startsWith("Up") ? "container up" : s.container);
+    else if (!s.planned) bits.push("no container");
+    for (const u of s.unblocks || [])
+      bits.push(`⬆ ${u.name} [${u.type}]` + (u.verified === true ? " ✓" : u.verified === false ? " ✗" : ""));
+    if (bits.length) box.append(el("div", "meta", bits.join(" · ")));
+    cols.get(d).append(box);
+    boxes.set(s.name, { box, sess: s });
+  }
+  for (const d of [...cols.keys()].sort((a, b) => a - b)) board.append(cols.get(d));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "edges");
+  board.append(svg);
+  card.append(board);
+
+  if ((p.contradictions || []).length) {
+    const c = el("div", "contras");
+    c.append(el("div", null, "⚠ contradictions:"));
+    for (const x of p.contradictions) c.append(el("div", null, `${x.session}: ${x.kind} — ${x.detail}`));
+    card.append(c);
+  }
+  if ((p.parser_errors || []).length) {
+    const c = el("div", "contras perr");
+    for (const x of p.parser_errors) c.append(el("div", null, "parser: " + x));
+    card.append(c);
+  }
+  requestAnimationFrame(() => {
+    const br = board.getBoundingClientRect();
+    svg.setAttribute("width", board.scrollWidth); svg.setAttribute("height", board.scrollHeight);
+    for (const { box, sess } of boxes.values()) {
+      const dep = (sess.depends_on || "").trim();
+      if (!dep) continue;
+      for (const [oname, o] of boxes) {
+        if (oname === sess.name || !dep.includes(oname)) continue;
+        const a = o.box.getBoundingClientRect(), b = box.getBoundingClientRect();
+        const line = document.createElementNS(svg.namespaceURI, "line");
+        line.setAttribute("x1", a.right - br.left + board.scrollLeft);
+        line.setAttribute("y1", a.top + a.height / 2 - br.top);
+        line.setAttribute("x2", b.left - br.left + board.scrollLeft - 6);
+        line.setAttribute("y2", b.top + b.height / 2 - br.top);
+        line.setAttribute("stroke", "currentColor"); line.setAttribute("stroke-opacity", "0.45");
+        line.setAttribute("marker-end", "url(#arr)");
+        svg.append(line);
+      }
+    }
+    const defs = document.createElementNS(svg.namespaceURI, "defs");
+    defs.innerHTML = '<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor" fill-opacity="0.6"/></marker>';
+    svg.prepend(defs);
+  });
+  return card;
+}
+
+async function refresh() {
+  const root = document.getElementById("root"), stamp = document.getElementById("stamp");
+  try {
+    const r = await fetch("/api/plans");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const plans = await r.json();
+    root.replaceChildren();
+    if (!plans.length) root.append(el("div", "empty", "No active plans in /opt/cc-notes."));
+    for (const p of plans) root.append(renderPlan(p));
+    stamp.textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    stamp.textContent = "fetch failed: " + e.message;
+  }
+}
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
