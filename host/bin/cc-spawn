@@ -70,6 +70,19 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$SESSION_NAME"; then
   echo "[0/5] Admission OK — reservation $ATTEMPT_ID ($CANON_REPO@$BRANCH, ${REQ_GB}g)"
 fi
 
+# Optional per-repo short-lived GitHub token (CC_SCOPED_TOKEN=1; needs the GitHub App,
+# see docs/scoped-github-tokens.md). ~1h TTL — good for short tasks; long sessions doing
+# late `gh` calls should stay on the default token. git push is unaffected (SSH key).
+if [[ "${CC_SCOPED_TOKEN:-0}" == "1" ]]; then
+  if SCOPED=$(cc-github-token "$CANON_REPO"); then
+    export GITHUB_TOKEN="$SCOPED"
+    echo "      scoped GitHub token minted for $CANON_REPO (~1h TTL)"
+  else
+    echo "ERROR: CC_SCOPED_TOKEN=1 but token mint failed — refusing to fall back silently" >&2
+    exit 1
+  fi
+fi
+
 # 1. Clone bare repo if missing
 STAGE=clone
 if [[ ! -d "$BARE_DIR" ]]; then
