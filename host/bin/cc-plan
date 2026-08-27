@@ -15,7 +15,7 @@ that releases nothing):
 
 Malformed input is reported as parser_errors — never silently inferred green.
 """
-import argparse, json, os, re, subprocess, sys, time
+import argparse, calendar, json, os, re, subprocess, sys, time
 
 NOTES_ROOT = "/opt/cc-notes"
 BASE_DIR = os.environ.get("CC_BASE_DIR", os.path.expanduser("~/Fractional"))
@@ -39,7 +39,7 @@ def sh(cmd, timeout=15):
 
 def epoch(iso):
     try:
-        return time.mktime(time.strptime(iso.rstrip("Z"), "%Y-%m-%dT%H:%M:%S")) - time.timezone
+        return calendar.timegm(time.strptime(iso.rstrip("Z"), "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
         return None
 
