@@ -111,7 +111,27 @@ echo "→ Session:  $SESSION_NAME"
 echo "→ Agent:    OpenCode — $MODE_LABEL — $MODEL_LABEL"
 echo
 
+# 0. Admission + durable reservation via cc-ledger (Wave 2) — same contract as cc-spawn:
+# one locked transaction checks fleet/memory/start budgets and takes the repo@ref
+# reservation; refusals print the reason and exit 2.
+CC_MEM_LIMIT="${CC_MEM_LIMIT:-4g}"
+case "$CC_MEM_LIMIT" in
+  [2-8]g) REQ_GB="${CC_MEM_LIMIT%g}" ;;
+  *) echo "ERROR: CC_MEM_LIMIT must be 2g..8g (got '$CC_MEM_LIMIT')" >&2; exit 1 ;;
+esac
+export CC_MEM_LIMIT
+CANON_REPO=$(echo "$REPO_URL" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' | tr 'A-Z' 'a-z')
+ATTEMPT_ID=""
+STAGE=prepare
+if ! docker ps --format '{{.Names}}' | grep -qx "$SESSION_NAME"; then
+  ATTEMPT_ID=$(cc-ledger admit --session "$SESSION_NAME" --repo "$CANON_REPO" --ref "$BRANCH" \
+    --mem "$REQ_GB" --requester cc-code) || exit $?
+  trap '[[ -n "$ATTEMPT_ID" ]] && cc-ledger set "$ATTEMPT_ID" failed --stage "$STAGE" --msg "spawn exited during $STAGE" >/dev/null 2>&1 || true' EXIT
+  echo "[0/5] Admission OK — reservation $ATTEMPT_ID ($CANON_REPO@$BRANCH, ${REQ_GB}g)"
+fi
+
 # 1. Clone bare repo if missing
+STAGE=clone
 if [[ ! -d "$BARE_DIR" ]]; then
   echo "[1/5] Bare repo missing — cloning $REPO_URL"
   mkdir -p "$REPO_DIR"
@@ -126,6 +146,7 @@ else
 fi
 
 # 2. Create worktree if missing
+STAGE=worktree
 if [[ -d "$WORKTREE_DIR" ]]; then
   echo "[2/5] Worktree exists — reusing $WORKTREE_DIR"
 else
@@ -159,23 +180,16 @@ else
   export REPO_DIR
   export OPENCODE_MODE="$MODE"
   export OPENCODE_MODEL="$MODEL"
+  STAGE=container
   docker compose -p "$SESSION_NAME" up -d
   STARTED_NOW=1
+  if [[ -n "$ATTEMPT_ID" ]]; then
+    CID=$(docker inspect --format '{{.Id}}' "$SESSION_NAME" 2>/dev/null || true)
+    cc-ledger set "$ATTEMPT_ID" starting ${CID:+--container "$CID"} >/dev/null || true
+  fi
+  STAGE=register
   sleep 1
 fi
-
-# 3b. Auto-build the graphify knowledge graph in the background (fresh start only) so the agent can
-#     query it (graphify query/explain/path) instead of reading files. Best-effort; git-excluded.
-if [[ "${STARTED_NOW:-0}" == "1" ]]; then
-  docker exec -d "$SESSION_NAME" bash -lc '
-    cd /home/pwuser/work 2>/dev/null || exit 0
-    command -v graphify >/dev/null 2>&1 || exit 0
-    ex=$(git rev-parse --git-path info/exclude 2>/dev/null) && [ -n "$ex" ] && ! grep -qxF "graphify-out/" "$ex" 2>/dev/null && printf "graphify-out/\n" >> "$ex"
-    graphify . --no-viz >/tmp/graphify-build.log 2>&1
-  ' >/dev/null 2>&1 || true
-  echo "[3b] graphify knowledge graph building in background"
-fi
-
 
 # 4. Register with agent-deck (idempotent)
 existing_id=$(agent-deck list -json 2>/dev/null | python3 -c "
@@ -231,10 +245,18 @@ for s in json.load(sys.stdin):
       tmux send-keys -t "$tmux_name" "clear; echo 'Launching OpenCode — $MODE_LABEL — $MODEL_LABEL (ocd)...'; ocd" Enter 2>/dev/null || true
     fi
   fi
+  if [[ -n "$ATTEMPT_ID" ]]; then
+    cc-ledger set "$ATTEMPT_ID" running ${tmux_name:+--tmux "$tmux_name"} >/dev/null || true
+    trap - EXIT
+  fi
   exec agent-deck session attach "$AGENTDECK_ID"
 fi
 
 # Fallback path — agent-deck unavailable: legacy tmux behavior
+if [[ -n "$ATTEMPT_ID" ]]; then
+  cc-ledger set "$ATTEMPT_ID" running --tmux "$SESSION_NAME" >/dev/null || true
+  trap - EXIT
+fi
 echo "[5/5] Attaching via tmux (fallback — agent-deck unavailable)"
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   exec tmux attach-session -t "$SESSION_NAME"

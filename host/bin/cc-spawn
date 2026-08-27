@@ -47,11 +47,11 @@ echo "→ Worktree: $WORKTREE_DIR"
 echo "→ Session:  $SESSION_NAME"
 echo
 
-# 0. Admission control (Wave 0 interim shim; the durable ledger replaces this in Wave 2).
-# Invariant: sum of admitted memory limits (resident fleet + pending spawns + this request)
-# stays <= CC_ADMIT_GB. Legacy containers without the fleet label predate dynamic caps
-# (8g limit, ~1g observed use): assessed at 4g until they cycle out. Fail CLOSED: any
-# probe error rejects the spawn. Session tokens: CC_TOKENS=vercel,railway,supabase opt-in.
+# 0. Admission + durable reservation via cc-ledger (Wave 2). The ledger is the single
+# admission point for every spawn path: it checks the fleet/memory/start budgets and
+# takes the repo@ref reservation in ONE locked transaction, so concurrent orchestrators
+# cannot double-spawn or over-commit. Refusals print the reason and exit 2.
+# Session tokens: CC_TOKENS=vercel,railway,supabase opt-in.
 CC_MEM_LIMIT="${CC_MEM_LIMIT:-4g}"
 case "$CC_MEM_LIMIT" in
   [2-8]g) REQ_GB="${CC_MEM_LIMIT%g}" ;;
@@ -60,67 +60,18 @@ esac
 export CC_MEM_LIMIT
 CC_TOKENS="${CC_TOKENS:-}"
 
-PENDING_MARKER=""
+CANON_REPO=$(echo "$REPO_URL" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' | tr 'A-Z' 'a-z')
+ATTEMPT_ID=""
+STAGE=prepare
 if ! docker ps --format '{{.Names}}' | grep -qx "$SESSION_NAME"; then
-  ADMIT_GB="${CC_ADMIT_GB:-48}"
-  MAX_SESSIONS="${CC_MAX_SESSIONS:-12}"
-  MAX_STARTS="${CC_MAX_STARTS:-2}"
-  PENDING_DIR=/opt/cc-data/pending
-  mkdir -p "$PENDING_DIR"
-  exec 9>/opt/cc-data/spawn.lock
-  flock -w 30 9 || { echo "ERROR: admission lock timeout" >&2; exit 1; }
-  # stale pending markers (>30 min: crashed spawner) are conservatively cleaned
-  find "$PENDING_DIR" -name '*.pending' -mmin +30 -delete 2>/dev/null || true
-
-  FLEET_IDS=$( { docker ps -aq --filter label=com.fractional.cc-fleet=session \
-                   --filter status=running --filter status=created --filter status=restarting; \
-                 docker ps -aq --filter ancestor=cc-session:latest \
-                   --filter status=running --filter status=created --filter status=restarting; } | sort -u )
-  COUNT=0; SUM_GB=0
-  for id in $FLEET_IDS; do
-    COUNT=$((COUNT+1))
-    line=$(docker inspect --format '{{.HostConfig.Memory}} {{index .Config.Labels "com.fractional.cc-fleet"}}' "$id") \
-      || { echo "ERROR: docker inspect failed for $id" >&2; exit 1; }
-    mem="${line%% *}"; lab="${line#* }"
-    if [[ "$lab" == "session" && "$mem" =~ ^[0-9]+$ && "$mem" -gt 0 ]]; then
-      SUM_GB=$((SUM_GB + (mem + 1073741823) / 1073741824))
-    else
-      SUM_GB=$((SUM_GB + 4))   # legacy assessment
-    fi
-  done
-  PENDING_COUNT=0
-  for p in "$PENDING_DIR"/*.pending; do
-    [[ -e "$p" ]] || continue
-    PENDING_COUNT=$((PENDING_COUNT+1))
-    g=$(cat "$p" 2>/dev/null || echo 4)
-    [[ "$g" =~ ^[2-8]$ ]] || g=4
-    SUM_GB=$((SUM_GB + g))
-  done
-
-  [[ "$COUNT" -lt "$MAX_SESSIONS" ]] || { echo "ERROR: fleet full ($COUNT/$MAX_SESSIONS resident sessions)" >&2; exit 1; }
-  [[ "$PENDING_COUNT" -lt "$MAX_STARTS" ]] || { echo "ERROR: $PENDING_COUNT spawns already starting (max $MAX_STARTS)" >&2; exit 1; }
-  [[ $((SUM_GB + REQ_GB)) -le "$ADMIT_GB" ]] || { echo "ERROR: admitted memory ${SUM_GB}G + ${REQ_GB}G request exceeds ${ADMIT_GB}G budget" >&2; exit 1; }
-
-  AVAIL_KB=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
-  [[ "$AVAIL_KB" =~ ^[0-9]+$ ]] || { echo "ERROR: cannot read MemAvailable" >&2; exit 1; }
-  [[ $((AVAIL_KB/1048576 - REQ_GB)) -ge 8 ]] || { echo "ERROR: only $((AVAIL_KB/1048576))G actually free; need ${REQ_GB}G + 8G emergency floor" >&2; exit 1; }
-
-  for fs in "$BASE_DIR" /; do
-    dfline=$(df -B1G --output=avail,iavail "$fs" 2>/dev/null | tail -1) || { echo "ERROR: df failed for $fs" >&2; exit 1; }
-    read -r davail iavail <<<"$dfline"
-    [[ "${iavail:-x}" =~ ^[0-9]+$ ]] || { echo "ERROR: df parse failed for $fs" >&2; exit 1; }
-    [[ "$davail" -ge 30 ]] || { echo "ERROR: <30G disk free on $fs" >&2; exit 1; }
-    [[ "$iavail" -ge 500000 ]] || { echo "ERROR: <500k inodes free on $fs" >&2; exit 1; }
-  done
-
-  PENDING_MARKER="$PENDING_DIR/$SESSION_NAME.$$.pending"
-  echo "$REQ_GB" > "$PENDING_MARKER"
-  trap 'rm -f "$PENDING_MARKER"' EXIT
-  flock -u 9
-  echo "[0/5] Admission OK: $COUNT resident + $PENDING_COUNT starting, ${SUM_GB}G admitted, +${REQ_GB}G request (budget ${ADMIT_GB}G)"
+  ATTEMPT_ID=$(cc-ledger admit --session "$SESSION_NAME" --repo "$CANON_REPO" --ref "$BRANCH" \
+    --mem "$REQ_GB" --requester "${CC_REQUESTER:-cc-spawn}") || exit $?
+  trap '[[ -n "$ATTEMPT_ID" ]] && cc-ledger set "$ATTEMPT_ID" failed --stage "$STAGE" --msg "cc-spawn exited during $STAGE" >/dev/null 2>&1 || true' EXIT
+  echo "[0/5] Admission OK — reservation $ATTEMPT_ID ($CANON_REPO@$BRANCH, ${REQ_GB}g)"
 fi
 
 # 1. Clone bare repo if missing
+STAGE=clone
 if [[ ! -d "$BARE_DIR" ]]; then
   echo "[1/5] Bare repo missing — cloning $REPO_URL"
   mkdir -p "$REPO_DIR"
@@ -135,6 +86,7 @@ else
 fi
 
 # 2. Create worktree if missing
+STAGE=worktree
 if [[ -d "$WORKTREE_DIR" ]]; then
   echo "[2/5] Worktree exists — reusing $WORKTREE_DIR"
 else
@@ -176,11 +128,14 @@ else
     esac
   done
   [[ -n "$GRANTED" ]] && echo "      tokens granted:$GRANTED"
+  STAGE=container
   docker compose "${COMPOSE_FILES[@]}" -p "$SESSION_NAME" up -d
   STARTED_NOW=1
-  if [[ -n "$PENDING_MARKER" ]]; then
-    rm -f "$PENDING_MARKER"; trap - EXIT
+  if [[ -n "$ATTEMPT_ID" ]]; then
+    CID=$(docker inspect --format '{{.Id}}' "$SESSION_NAME" 2>/dev/null || true)
+    cc-ledger set "$ATTEMPT_ID" starting ${CID:+--container "$CID"} >/dev/null || true
   fi
+  STAGE=register
   sleep 1
 fi
 
@@ -232,10 +187,18 @@ for s in json.load(sys.stdin):
   if [[ -n "$tmux_name" ]]; then
     tmux set-option -t "$tmux_name" mouse off 2>/dev/null || true
   fi
+  if [[ -n "$ATTEMPT_ID" ]]; then
+    cc-ledger set "$ATTEMPT_ID" running ${tmux_name:+--tmux "$tmux_name"} >/dev/null || true
+    trap - EXIT
+  fi
   exec agent-deck session attach "$AGENTDECK_ID"
 fi
 
 # Fallback path — agent-deck unavailable: legacy tmux behavior
+if [[ -n "$ATTEMPT_ID" ]]; then
+  cc-ledger set "$ATTEMPT_ID" running --tmux "$SESSION_NAME" >/dev/null || true
+  trap - EXIT
+fi
 echo "[5/5] Attaching via tmux (fallback — agent-deck unavailable)"
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   exec tmux attach-session -t "$SESSION_NAME"

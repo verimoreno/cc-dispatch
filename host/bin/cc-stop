@@ -37,5 +37,8 @@ fi
 # Kill any leftover plain tmux session (legacy)
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 
+# Best-effort ledger transition (running -> stopping); cc-cleanup-worktree marks done
+cc-ledger set-by-session "$SESSION" stopping >/dev/null 2>&1 || true
+
 echo "Stopped session '$SESSION'. Worktree and auth volume preserved."
 echo "agent-deck entry kept (use cc-cleanup-worktree to remove it)."
