@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# cc-conductor — watches every agent-deck tmux session on cc-host and, when
+# Claude Code shows the server-side rate-limit error, sends "continue" so the
+# session resumes on its own. Always-on; runs in its own agent-deck tmux session.
+#
+# Guards:
+#  - matches only on the LAST N lines of each pane (no scrollback false-positives)
+#  - per-session 60s debounce
+#  - "one resume per tick" — if multiple sessions are stalled, they're resumed
+#    one at a time, not in parallel, to avoid stampeding the throttle
+#  - logs everything to ~/conductor.log
+#
+# Usage (on cc-host):
+#   cc-conductor                # run in foreground (typically inside tmux)
+#   cc-conductor-start          # launch as its own agent-deck session
+
+set -uo pipefail
+
+LOG="${HOME}/conductor.log"
+TICK_SECONDS="${CC_CONDUCTOR_TICK:-15}"
+# Only look at the very bottom of the pane — the rate-limit error appears
+# right above the input prompt when Claude is actually stalled. Looking
+# further up matches historical error text that's still rendered in the
+# conversation log, which fires "continue" forever (the bug we hit on
+# 2026-05-15 — the literal screenshot showed conductor sending continue
+# to a clean "all done" session because the error from hours earlier was
+# still in scrollback).
+LOOKBACK_LINES="${CC_CONDUCTOR_LOOKBACK:-3}"
+DEBOUNCE_SECONDS="${CC_CONDUCTOR_DEBOUNCE:-60}"
+ERROR_PATTERN='Server is temporarily limiting requests.*Rate limited'
+
+declare -A LAST_RESUME
+declare -A LAST_HASH       # per-session hash of last tick's pane tail
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"
+}
+
+log "cc-conductor starting (tick=${TICK_SECONDS}s, lookback=${LOOKBACK_LINES} lines, debounce=${DEBOUNCE_SECONDS}s, requires stability across 2 ticks)"
+
+while true; do
+  # Snapshot of agent-deck sessions (excluding ourselves)
+  mapfile -t sessions < <(tmux list-sessions -F '#{session_name}' 2>/dev/null \
+                          | grep -E '^agentdeck_' \
+                          | grep -v -E 'conductor')
+
+  resumed_this_tick=0
+
+  for session in "${sessions[@]}"; do
+    # One resume per tick — stagger across sessions
+    [[ $resumed_this_tick -eq 1 ]] && break
+
+    pane_content=$(tmux capture-pane -t "$session" -p -S "-${LOOKBACK_LINES}" 2>/dev/null || true)
+    [[ -z "$pane_content" ]] && continue
+
+    # Skip if error pattern is NOT in the last few lines.
+    if ! echo "$pane_content" | grep -Eq "$ERROR_PATTERN"; then
+      # Reset the stability hash so a fresh stall has to be observed twice
+      # before we resume.
+      unset 'LAST_HASH[$session]'
+      continue
+    fi
+
+    # Stability check: only fire if pane tail is identical to last tick.
+    # If Claude is actively responding, output is changing — skip.
+    current_hash=$(printf '%s' "$pane_content" | md5sum | cut -d' ' -f1)
+    prev_hash=${LAST_HASH[$session]:-}
+    LAST_HASH[$session]=$current_hash
+    if [[ "$prev_hash" != "$current_hash" ]]; then
+      # First time seeing this state; wait for next tick to confirm stability
+      continue
+    fi
+
+    # Debounce: don't re-fire on a session within DEBOUNCE_SECONDS
+    now=$(date +%s)
+    last=${LAST_RESUME[$session]:-0}
+    elapsed=$(( now - last ))
+    if (( elapsed < DEBOUNCE_SECONDS )); then
+      continue
+    fi
+
+    log "resume → $session (stable for 1+ tick, last resume ${elapsed}s ago)"
+    tmux send-keys -t "$session" "continue" Enter
+    LAST_RESUME[$session]=$now
+    resumed_this_tick=1
+  done
+
+  sleep "$TICK_SECONDS"
+done

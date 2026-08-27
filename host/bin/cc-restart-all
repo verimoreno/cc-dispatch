@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# cc-restart-all — restart Claude Code in every agent-deck work session.
+# Useful after installing a user-scope plugin so every session picks it up.
+#
+# Usage:
+#   cc-restart-all                       # restart with `ccd` (fresh, no resume)
+#   cc-restart-all --resume              # use `ccd -c`  ⚠ see warning below
+#   cc-restart-all --filter wewood       # only sessions whose name matches
+#   cc-restart-all --cmd claude          # use `claude` instead of `ccd`
+#   cc-restart-all --dry-run             # print the plan, do nothing
+#
+# ⚠ --resume is unsafe in the cc-spawn setup. All containers share
+#   ~/.claude/projects/ via the auth volume, and Claude Code namespaces
+#   conversations by cwd — but every container's cwd is /home/pwuser/work.
+#   So `claude -c` resumes the globally most-recent conversation across
+#   ALL containers, not the most recent for THIS worktree. We learned this
+#   the hard way (a Fractional conversation got loaded into a TYD container
+#   and merged the wrong PR). Default is no-resume for that reason.
+#
+# Skips the conductor session. Sends `/exit` (harmless if already at shell —
+# bash just complains "command not found"), waits, then sends the launch
+# command. Sequential by design — parallel restarts re-trigger the bootstrap
+# rate-limit (see issue #53922).
+
+set -euo pipefail
+
+FILTER=""
+DRY_RUN=0
+RESUME=0
+CMD="ccd"
+EXIT_DELAY="${CC_RESTART_EXIT_DELAY:-3}"
+RESUME_DELAY="${CC_RESTART_RESUME_DELAY:-2}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --filter)  FILTER="$2"; shift 2 ;;
+    --cmd)     CMD="$2"; shift 2 ;;
+    --resume)  RESUME=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help)
+      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "cc-restart-all: unknown arg '$1'" >&2; exit 2 ;;
+  esac
+done
+
+LAUNCH="$CMD"
+[[ $RESUME -eq 1 ]] && LAUNCH="$CMD -c"
+
+mapfile -t sessions < <(
+  tmux list-sessions -F '#{session_name}' 2>/dev/null \
+  | grep -E '^agentdeck_' \
+  | grep -v -E 'conductor' \
+  | { [[ -n "$FILTER" ]] && grep -E "$FILTER" || cat; }
+)
+
+if [[ ${#sessions[@]} -eq 0 ]]; then
+  echo "no matching agent-deck sessions"
+  exit 0
+fi
+
+echo "will restart ${#sessions[@]} session(s) with: ${LAUNCH}"
+printf '  %s\n' "${sessions[@]}"
+
+if [[ $RESUME -eq 1 ]]; then
+  echo
+  echo "⚠ --resume picks the globally most-recent conversation across all"
+  echo "  containers (shared ~/.claude/projects). Cross-contamination risk."
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "(dry-run — no changes made)"
+  exit 0
+fi
+
+for s in "${sessions[@]}"; do
+  echo "→ $s"
+  tmux send-keys -t "$s" "/exit" Enter
+  sleep "$EXIT_DELAY"
+  tmux send-keys -t "$s" "$LAUNCH" Enter
+  sleep "$RESUME_DELAY"
+done
+
+echo "✓ done — ${#sessions[@]} session(s) restarted with: ${LAUNCH}"

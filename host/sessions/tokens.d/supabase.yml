@@ -1,0 +1,4 @@
+services:
+  cc-session:
+    environment:
+      - SUPABASE_ACCESS_TOKEN=${SUPABASE_ACCESS_TOKEN:-}

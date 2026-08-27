@@ -1,0 +1,25 @@
+<!-- plan-notes-directive (added 2026-08-27; safe to remove) -->
+# Plan notes — fleet coordination protocol
+
+If your task prompt names a **plan directory** under `/opt/cc-notes/<plan>/`, you are part
+of a multi-session plan. (If no plan directory was given, or `/opt/cc-notes` doesn't exist
+in this container, this protocol doesn't apply — skip it.)
+
+- **Before starting**: read `/opt/cc-notes/<plan>/PLAN.md` — the goal, the session roster,
+  and especially the **Assignments** table. Do not touch areas assigned to another session;
+  if your task seems to overlap one, note it (STATUS: blocked) instead of proceeding.
+- **Write your notes** to `/opt/cc-notes/<plan>/notes/<your-session-name>.md` (your session
+  name is your container hostname — `hostname` prints it). Create the file if missing.
+  **Append-only, and only to your own file** — never edit PLAN.md or another session's notes.
+- **Entry format** (grep-friendly, keep it):
+
+      ## 2026-08-27T14:03:00Z
+      STATUS: working|done|blocked
+      <brief prose: what you did / found / decided, and anything the next agent needs>
+      UNBLOCKS: <thing>        # only when you finished something a dependency waits on
+
+- **When to write**: when you start (STATUS: working + your understanding of the task), at
+  meaningful milestones or surprising discoveries, when blocked (say exactly on what), and
+  a final `STATUS: done` entry summarising what you shipped (branch, PR, key decisions).
+- Timestamps in UTC: `date -u +%FT%TZ`.
+<!-- /plan-notes-directive -->

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# cc-cleanup-worktree — remove a worktree and its agent-deck entry
+# Usage: cc-cleanup-worktree <repo-name> <branch-name> [arch|code]
+#   The optional 3rd arg targets an OpenCode fleet session (cc-arch / cc-code),
+#   whose worktree and session names are suffixed with -arch / -code.
+#   Omit it for regular cc-spawn (Claude) sessions — behavior is unchanged.
+
+set -euo pipefail
+
+REPO="${1:?repo name required}"
+BRANCH="${2:?branch name required}"
+SUFFIX="${3:-}"   # optional: arch | code (OpenCode fleet sessions)
+
+BASE_DIR="${CC_BASE_DIR:-$HOME/Fractional}"
+REPO_DIR="$BASE_DIR/$REPO"
+BARE_DIR="$REPO_DIR/.bare"
+
+if [[ -n "$SUFFIX" ]]; then
+  WORKTREE_DIR="$REPO_DIR/wt-${BRANCH}-${SUFFIX}"
+  SESSION_NAME=$(echo "${REPO}-${BRANCH}-${SUFFIX}" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_')
+else
+  WORKTREE_DIR="$REPO_DIR/wt-$BRANCH"
+  SESSION_NAME=$(echo "${REPO}-${BRANCH}" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_')
+fi
+if docker ps --format '{{.Names}}' | grep -qx "$SESSION_NAME"; then
+  echo "ERROR: container '$SESSION_NAME' is still running. Stop it first:"
+  echo "  cc-stop $SESSION_NAME"
+  exit 1
+fi
+
+# Remove agent-deck entry (best-effort, don't block)
+AGENTDECK_ID=$(agent-deck list -json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    sessions = data if isinstance(data, list) else data.get('sessions', [])
+    for s in sessions:
+        if s.get('title') == '$SESSION_NAME':
+            print(s.get('id', ''))
+            break
+except Exception:
+    pass
+" 2>/dev/null || true)
+
+if [[ -n "$AGENTDECK_ID" ]]; then
+  echo "Removing agent-deck entry ($AGENTDECK_ID)..."
+  agent-deck rm "$AGENTDECK_ID" 2>&1 | grep -v '^$' || echo "  WARN: agent-deck rm failed"
+fi
+
+if [[ ! -d "$BARE_DIR" ]]; then
+  echo "ERROR: no bare repo at $BARE_DIR"
+  exit 1
+fi
+
+if [[ ! -d "$WORKTREE_DIR" ]]; then
+  echo "Worktree $WORKTREE_DIR doesn't exist — running prune"
+  git --git-dir="$BARE_DIR" worktree prune -v
+  exit 0
+fi
+
+cd "$WORKTREE_DIR"
+if ! git diff --quiet HEAD 2>/dev/null || \
+   [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+  echo "WARNING: $WORKTREE_DIR has uncommitted changes:"
+  git status --short
+  read -rp "Force remove anyway? [y/N] " confirm
+  [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 1; }
+  cd "$REPO_DIR"
+  git --git-dir="$BARE_DIR" worktree remove --force "$WORKTREE_DIR"
+else
+  cd "$REPO_DIR"
+  git --git-dir="$BARE_DIR" worktree remove "$WORKTREE_DIR"
+fi
+
+echo "Worktree removed: $WORKTREE_DIR"
+echo "Note: branch '$BRANCH' still exists in the bare repo."
+echo "Delete it with: git --git-dir=$BARE_DIR branch -D $BRANCH"
