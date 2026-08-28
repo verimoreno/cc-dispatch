@@ -7,7 +7,9 @@
 // URL via CC_BOARD_URL (default http://100.100.213.79:7822/plans.html).
 // Needs `npm i playwright` wherever it runs (laptop is fine); run-tests.sh skips it
 // when playwright or the board is unreachable.
-const { chromium } = require("playwright");
+let chromium;
+try { ({ chromium } = require("playwright")); }
+catch { ({ chromium } = require(require("path").join(process.cwd(), "node_modules", "playwright"))); }
 
 (async () => {
   const [out, expectRaw] = process.argv.slice(2);

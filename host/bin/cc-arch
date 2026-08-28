@@ -228,7 +228,9 @@ fi
 
 # 5. Start agent-deck session (creates tmux) and attach
 if [[ -n "$AGENTDECK_ID" ]]; then
-  echo "[5/5] Attaching via agent-deck (Ctrl-B D to detach, container keeps running)"
+  if [[ "$DETACH" == "1" ]]; then echo "[5/5] Finalizing (detached)"; else
+    echo "[5/5] Attaching via agent-deck (Ctrl-B D to detach, container keeps running)"
+  fi
   agent-deck session start "$AGENTDECK_ID" 2>&1 | grep -v '^$' || true
   # Disable tmux mouse so terminal-native copy works (agent-deck force-enables mouse per session)
   tmux_name=$(agent-deck list -json 2>/dev/null | python3 -c "
