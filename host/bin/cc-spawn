@@ -5,12 +5,19 @@
 
 set -euo pipefail
 
+DETACH=0
+if [[ "${1:-}" == "--detach" ]]; then DETACH=1; shift; fi
+
 REPO_INPUT="${1:-}"
 BRANCH="${2:-}"
 
 if [[ -z "$REPO_INPUT" || -z "$BRANCH" ]]; then
   cat <<EOF
-Usage: cc-spawn <repo-name-or-url> <branch-name>
+Usage: cc-spawn [--detach] <repo-name-or-url> <branch-name>
+
+  --detach   create worktree+container, register, mark running, and EXIT
+             without attaching — for orchestrators (pair with cc-launch).
+             No tmux holding-window dance needed: run it directly over ssh.
 
 Examples:
   cc-spawn cleanup feature-laundry-v2
@@ -204,6 +211,10 @@ for s in json.load(sys.stdin):
     cc-ledger set "$ATTEMPT_ID" running ${tmux_name:+--tmux "$tmux_name"} >/dev/null || true
     trap - EXIT
   fi
+  if [[ "$DETACH" == "1" ]]; then
+    echo "[5/5] Detached — session $SESSION_NAME ready (tmux: ${tmux_name:-unknown})"
+    exit 0
+  fi
   exec agent-deck session attach "$AGENTDECK_ID"
 fi
 
@@ -211,6 +222,12 @@ fi
 if [[ -n "$ATTEMPT_ID" ]]; then
   cc-ledger set "$ATTEMPT_ID" running --tmux "$SESSION_NAME" >/dev/null || true
   trap - EXIT
+fi
+if [[ "$DETACH" == "1" ]]; then
+  tmux has-session -t "$SESSION_NAME" 2>/dev/null || \
+    tmux new-session -d -s "$SESSION_NAME" "docker exec -it $SESSION_NAME bash"
+  echo "[5/5] Detached — fallback tmux session $SESSION_NAME (agent-deck unavailable)"
+  exit 0
 fi
 echo "[5/5] Attaching via tmux (fallback — agent-deck unavailable)"
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then

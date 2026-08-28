@@ -71,8 +71,14 @@ Spawn via [[cc-spawn-session]] as usual, with two additions to the prompt:
   `You are part of plan /opt/cc-notes/PLAN_ID/ — follow the plan-notes protocol in your CLAUDE.md before starting.`
 - State the task as usual.
 
-Then update PLAN.md: replace `PLANNED` with the real session name (= container
-hostname, e.g. `myrepo-feat-api`) and add its Assignments rows.
+Then register the session in the roster mechanically (replaces the matching
+`PLANNED` row, or appends; never hand-sed markdown pipes):
+
+```bash
+ssh cc-host 'cc-plan register PLAN_ID --session SESSION_NAME --repo-branch repo/branch'
+```
+
+Add its Assignments rows by hand (still orchestrator-owned).
 
 **Sequencing rule (hard):** if B depends on A, do NOT spawn B yet. B is spawned
 in step 4, when A's notes say so.
@@ -101,6 +107,10 @@ ssh cc-host 'cd /opt/cc-notes/PLAN_ID && \
   decide, and act via a *new* spawn or by telling Veri — not by injecting.
 - A session that has been `working` with no new entry for hours isn't "fine",
   it's unobserved — check it with cc-supervise.
+- `done-but-resident` in the contradictions = the work is finished (and ideally
+  verified) but the container still occupies an admission slot. Reap it:
+  `cc-stop <name>` then `cc-cleanup-worktree <repo> <branch>` — sessions are
+  cattle, and the fleet budget only frees up when you actually reap.
 
 For unattended watching, run this under `/loop` (e.g. `/loop 10m check plan
 PLAN_ID and spawn any newly-unblocked sessions`).

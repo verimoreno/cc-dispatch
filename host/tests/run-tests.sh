@@ -13,4 +13,12 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 else
   echo "==== cc-ledger integration SKIPPED (no docker here — run on cc-host)"
 fi
+BOARD="${CC_BOARD_URL:-http://100.100.213.79:7822/plans.html}"
+if node -e 'require("playwright")' >/dev/null 2>&1 \
+   && curl -sf -o /dev/null --max-time 5 "$BOARD"; then
+  echo "==== plan board smoke (playwright)"
+  node "$HERE/board-check.js" || rc=1
+else
+  echo "==== plan board smoke SKIPPED (needs 'npm i playwright' + reachable board)"
+fi
 exit $rc

@@ -57,135 +57,62 @@ the branch slug if it doesn't fit.
 ssh cc-host 'agent-deck ls --json'
 ```
 - If a session already exists whose `title` or `path` contains the target branch
-  → **stop and report it** (inject into that one via its `tmux_session` instead
-  of spawning a duplicate).
-- Sanity-check the fleet size — the host runs ~12 sessions comfortably. If it's
-  already at that level, tell Veri and suggest [[cc-cleanup-sessions]] first.
+  → **stop and report it** (inject into that one via cc-launch instead of
+  spawning a duplicate).
+- Admission (fleet size, memory budget, duplicate reservation) is enforced by
+  cc-spawn itself via cc-ledger — a refusal prints the reason; don't blind-retry.
 
-### 2. Spawn
-
-Always run the spawn in the **`cc-dispatch-spawns` holding session**, never a
-bare `tmux new-window` (see "Never bare new-window" below — it silently lands the
-window inside one of Veri's live agent sessions):
+### 2. Spawn, detached
 
 ```bash
-# owner/name form — pass a full git URL so cc-spawn doesn't prepend its default org:
-ssh cc-host 'tmux new-session -d -s cc-dispatch-spawns 2>/dev/null; \
-  tmux new-window -d -P -F "#{window_id}" -t cc-dispatch-spawns: \
-    "cc-spawn git@github.com:OWNER/NAME.git BRANCH"'
-# bare-name form (default org):
-ssh cc-host 'tmux new-session -d -s cc-dispatch-spawns 2>/dev/null; \
-  tmux new-window -d -P -F "#{window_id}" -t cc-dispatch-spawns: "cc-spawn NAME BRANCH"'
-```
-`-d` detaches it so the SSH command returns immediately and no attached client
-gets its view yanked; cc-spawn clones/creates the worktree and brings up the
-container in that background window. `-P -F '#{window_id}'` prints the window id
-(e.g. `@42`) — **record it as `$WID`**, you need it to clean up in step 7. The
-`new-session` is create-or-noop: it exits 1 with "duplicate session" once the
-holding session exists, which is the normal steady state.
-
-> **Never bare `new-window`.** `tmux new-window` with no `-t` targets the tmux
-> server's *current* session, and over SSH (no `$TMUX`) that resolves to whichever
-> session was attached most recently — i.e. one of Veri's live agents, at random.
-> Because cc-spawn ends by exec-ing `agent-deck session attach`, the window never
-> exits: it lingers inside that unrelated session as a nested view of the new one,
-> wearing the new session's title. Two sessions then look like one and keystrokes
-> land in the wrong agent. This bit us on 2026-08-10 (4 strays accumulated).
-
-### 3. Wait for the session to register
-
-Poll `agent-deck ls --json` every ~5 s until an entry matching the branch (in
-`title` or `path`) appears **with a non-empty `tmux_session`**. Give it up to
-~3 minutes — the clone dominates. If the host already has the repo's bare clone
-(`~/Fractional/<repo>/.bare`), registration is near-instant. Run the poll as a
-single host-side loop over one SSH connection rather than one SSH per tick:
-
-```bash
-ssh cc-host 'for i in $(seq 1 24); do agent-deck ls --json | grep -q "BRANCH" && break; sleep 5; done; ...'
-``` If it never appears, the spawn died: capture
-the scratch window's pane (`ssh cc-host 'tmux capture-pane -p -t $WID'`) for the
-error, check the 63-char budget, and report — do not blind-retry. Leave `$WID`
-alive in that case: its pane holds the only copy of the failure output.
-
-Record from the entry: `tmux_session` (call it `$TS`), `path` (the worktree).
-
-### 4. Launch Claude Code in the session
-
-The session comes up at a plain container shell (cc-spawn's session command is
-`docker exec … bash`), so `ccd` must be typed into the session's own pane:
-
-```bash
-ssh cc-host 'tmux send-keys -t "$TS" -l ccd; tmux send-keys -t "$TS" Enter'
+# owner/name form — full git URL so cc-spawn doesn't prepend its default org:
+ssh cc-host 'cc-spawn --detach git@github.com:OWNER/NAME.git BRANCH'
+# bare-name form (default org): ssh cc-host 'cc-spawn --detach NAME BRANCH'
 ```
 
-A blank pane at this point is normal (fresh shell, prompt not yet painted) —
-send `ccd` anyway; the step-5 gate catches the race either way.
+`--detach` runs the whole pipeline synchronously — admission, clone, worktree,
+container, agent-deck registration, ledger `running` — then **exits instead of
+attaching**. No tmux holding-window, no scratch-window reaping, no registration
+polling: when the command returns 0, the session exists; its output names the
+session and tmux target. Prefix `CC_MEM_LIMIT=6g` for browser/build-heavy
+tasks, `CC_TOKENS=...` for deploy tokens, `CC_SCOPED_TOKEN=1` for a repo-scoped
+GitHub token (see the Inputs above).
 
-### 5. Wait for the REPL to be ready — the footer gate
-
-Poll every ~5 s (up to ~150 s):
-
-```bash
-ssh cc-host 'tmux capture-pane -p -t "$TS" | tail -8'
-```
-
-**Ready** = the pane shows one of the persistent footer hints:
-`? for shortcuts` · `shift+tab to cycle` · `bypass permissions`.
-
-Match the **footer only, never the welcome banner** — the banner prints before
-the trust/theme modals, so it would falsely signal ready while a dialog is on
-screen and your prompt would land inside the modal.
-
-- If ~45 s pass with **no sign the TUI started at all** (no banner, no `╭`/`╰`
-  box art, no footer), the `ccd` keystroke raced the shell coming up — re-send
-  step 4 **once**.
-- If the deadline passes without the footer, inject anyway (best-effort, the
-  marker can lag) but say so in your report.
-
-### 6. Inject the prompt
-
-Single-line prompts — literal send-keys, then Enter:
+### 3. Launch the agent + inject the prompt — one command
 
 ```bash
-ssh cc-host 'tmux send-keys -t "$TS" -l "PROMPT"; tmux send-keys -t "$TS" Enter'
-```
-
-Multi-line prompts — don't fight shell quoting; load a tmux buffer over stdin
-and paste it:
-
-```bash
-ssh cc-host 'tmux load-buffer -b ccsp -' <<'EOF'
-...multi-line prompt...
+ssh cc-host 'cc-launch SESSION_NAME --agent ccd --prompt-file -' <<'EOF'
+...the task prompt (multi-line fine)...
 EOF
-ssh cc-host 'tmux paste-buffer -d -b ccsp -t "$TS"; sleep 1; tmux send-keys -t "$TS" Enter'
 ```
 
-**Always send a trailing Enter ~1 s after the text lands.** Claude Code's paste
-detection swallows the Enter that arrives inside the burst, leaving the prompt
-typed but unsubmitted — the delayed second Enter is what actually submits it.
+cc-launch owns the choreography that used to be manual: it types the launcher
+into the pane (skipping if the TUI is already up), gates on the agent's
+persistent **footer** markers (never the banner), auto-skips codex's update
+dialog, pastes the prompt, and handles the paste-detection Enter quirks —
+re-pressing Enter until the input box actually clears. Exit 0 = submitted;
+exit 2 = paste may be stuck (check the pane); nonzero otherwise = not ready in
+time, with the pane tail on stderr. `--agent cxd|ocd` for codex/OpenCode,
+`--agent none` to inject into the bare container shell.
 
-### 7. Reap the scratch window
+### 4. Verify + report
 
-The spawn window is parked on `agent-deck session attach` and **never exits on
-its own** — the session is driven through its own `$TS` from here on, so the
-window is pure clutter. Kill it once the prompt is submitted:
+Capture the pane once (`ssh cc-host 'tmux capture-pane -p -t TS | tail -8'`)
+to confirm the agent is responding, then report one block:
 
-```bash
-ssh cc-host 'tmux kill-window -t "$WID"'
-```
-
-Safe: that only kills a *client* attached to the session. The host runs
-`destroy-unattached off`, so the real session keeps running with no client.
-Skip this only when the spawn failed and you still need the pane's error output.
-
-### 8. Verify + report
-
-Capture the pane once more and confirm the prompt is gone from the input box
-(i.e. submitted, agent responding). Then report one block:
-
-`session <name> · repo/branch · worktree <path> · tmux <TS> · prompt submitted ✓`
+`session <name> · repo/branch · tmux <TS> · prompt submitted ✓`
 
 Suggest `/loop 5m cc-supervise` (or a one-shot cc-supervise) to watch it.
+For plan members, register the roster row mechanically:
+`ssh cc-host 'cc-plan register PLAN_ID --session NAME --repo-branch repo/branch'`.
+
+### Legacy manual flow
+
+The pre-cc-launch procedure (holding-window spawn, footer polling, buffer
+paste, double-Enter, window reaping) lives in git history and in
+cc-dispatch's `_spawn_and_inject`; fall back to it only if cc-launch itself is
+broken. The one rule that always stands: **never a bare `tmux new-window`** —
+without `-t` it lands inside a random live agent session.
 
 ## Variant — OpenCode fleet sessions (cc-arch / cc-code)
 
@@ -196,9 +123,7 @@ the same shape with three differences:
 1. **Spawn** (step 2) with the fleet command, which appends `-arch`/`-code` to the session name
    and auto-suffixes the worktree:
    ```bash
-   # same holding-session rule as step 2 — never a bare new-window
-   ssh cc-host 'tmux new-session -d -s cc-dispatch-spawns 2>/dev/null; \
-     tmux new-window -d -P -F "#{window_id}" -t cc-dispatch-spawns: "cc-code NAME BRANCH"'
+   ssh cc-host 'cc-code --detach NAME BRANCH'   # or cc-arch --detach
    #   cc-code = build/coder (Kimi K2.7-code on Go) · cc-arch = plan/architect (MiniMax M2.5 on Go)
    # optional 3rd arg picks the model: go:kimi3 (Go subscription) | kimi3 (OpenRouter) | any slug
    ```

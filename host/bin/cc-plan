@@ -216,6 +216,10 @@ def project(plan_id, verify=False):
         if st == "working" and s["note_age_min"] and s["note_age_min"] > STALE_MIN:
             contradictions.append({"session": name, "kind": "stale-notes",
                                    "detail": f"working but last note {s['note_age_min']}min ago"})
+        if st == "done" and running:
+            contradictions.append({"session": name, "kind": "done-but-resident",
+                                   "detail": f"finished but container still resident (a counted "
+                                             f"admission slot) — reap: cc-stop {name}"})
         if st == "done" and not s["unblocks"]:
             contradictions.append({"session": name, "kind": "done-unverified",
                                    "detail": "STATUS done with no typed UNBLOCKS evidence"
@@ -233,6 +237,29 @@ def project(plan_id, verify=False):
             "sessions": sessions, "assignments": plan["assignments"],
             "contradictions": contradictions, "parser_errors": errors}
 
+def register_row(text, session, repo_branch, task="", depends="—"):
+    """Replace the PLANNED roster row for repo_branch with the real session name,
+    or append a new row to the Roster table. Returns (new_text, action)."""
+    lines = text.splitlines(keepends=True)
+    in_roster = last_row = None
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("## "):
+            in_roster = s.lower().startswith("## roster")
+        elif in_roster and s.startswith("|"):
+            last_row = i
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) >= 2 and cells[0] == "PLANNED" and cells[1] == repo_branch:
+                cells[0] = session
+                if task: cells[2] = task
+                lines[i] = "| " + " | ".join(cells) + " |\n"
+                return "".join(lines), "replaced PLANNED row"
+    if last_row is None:
+        raise ValueError("no Roster table found in PLAN.md")
+    lines.insert(last_row + 1, f"| {session} | {repo_branch} | {task} | {depends} |\n")
+    return "".join(lines), "appended new row"
+
+
 def active_plans():
     if not os.path.isdir(NOTES_ROOT): return []
     return sorted(d for d in os.listdir(NOTES_ROOT)
@@ -246,6 +273,10 @@ def main():
     j.add_argument("plan", nargs="?"); j.add_argument("--all", action="store_true")
     j.add_argument("--verify", action="store_true")
     v = sub.add_parser("verify"); v.add_argument("plan")
+    r = sub.add_parser("register")
+    r.add_argument("plan"); r.add_argument("--session", required=True)
+    r.add_argument("--repo-branch", required=True)
+    r.add_argument("--task", default=""); r.add_argument("--depends", default="—")
     a = p.parse_args()
     if a.cmd == "list":
         for pl in active_plans(): print(pl)
@@ -257,6 +288,18 @@ def main():
         else:
             p.error("json needs a plan id or --all")
         print()
+    elif a.cmd == "register":
+        # Orchestrator-only helper (PLAN.md keeps its single writer): mechanical
+        # roster edit instead of hand-sed through markdown pipes.
+        path = os.path.join(NOTES_ROOT, a.plan, "PLAN.md")
+        try:
+            text = open(path).read()
+        except OSError as e:
+            sys.exit(f"ERROR: {e}")
+        new, action = register_row(text, a.session, a.repo_branch, a.task, a.depends)
+        new += f"- {time.strftime('%Y-%m-%d')} registered {a.session} ({action})\n"
+        with open(path, "w") as f: f.write(new)
+        print(f"{action}: {a.session} in {a.plan}")
     elif a.cmd == "verify":
         proj = project(a.plan, verify=True)
         bad = [c for c in proj.get("contradictions", []) if c["kind"] in ("evidence-failed", "done-unverified")]
