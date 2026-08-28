@@ -35,8 +35,8 @@ catch { ({ chromium } = require(require("path").join(process.cwd(), "node_module
       plans.push({
         title: card.querySelector("h2 span")?.textContent ?? "?",
         sessions,
-        edges: card.querySelectorAll("svg.edges line").length,
-        contradictions: [...card.querySelectorAll(".contras div")].map((d) => d.textContent),
+        edges: card.querySelectorAll("svg.edges > line, svg.edges > path").length,
+        contradictions: [...card.querySelectorAll(".contras div.row")].map((d) => d.textContent),
       });
     }
     return plans;
