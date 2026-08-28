@@ -81,6 +81,12 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$SESSION_NAME"; then
   echo "[0/5] Admission OK — reservation $ATTEMPT_ID ($CANON_REPO@$BRANCH, ${REQ_GB}g)"
 fi
 
+# Per-repo lock: two admitted spawns of DIFFERENT branches of one repo must not
+# race the bare clone/fetch/worktree-add (max-starts=2 makes that reachable).
+mkdir -p "$REPO_DIR"
+exec 8>"$REPO_DIR/.spawn.lock"
+flock -w 300 8 || { echo "ERROR: timed out waiting for per-repo spawn lock" >&2; exit 1; }
+
 # 1. Clone bare repo if missing
 STAGE=clone
 if [[ ! -d "$BARE_DIR" ]]; then
@@ -118,6 +124,8 @@ else
       -b "$BRANCH" "origin/$DEFAULT_BRANCH"
   fi
 fi
+
+exec 8>&-   # release the per-repo lock: container/registration steps can overlap
 
 # 3. Start container if not already running
 STARTED_NOW=0   # 1 only on a fresh container start -> gates the cxd auto-launch below
@@ -211,8 +219,14 @@ if [[ -n "$ATTEMPT_ID" ]]; then
   cc-ledger set "$ATTEMPT_ID" running --tmux "$SESSION_NAME" >/dev/null || true
   trap - EXIT
 fi
+if [[ "$DETACH" == "1" ]]; then
+  tmux has-session -t "=$SESSION_NAME" 2>/dev/null || \
+    tmux new-session -d -s "$SESSION_NAME" "docker exec -it $SESSION_NAME bash"
+  echo "[5/5] Detached — fallback tmux session $SESSION_NAME (agent-deck unavailable)"
+  exit 0
+fi
 echo "[5/5] Attaching via tmux (fallback — agent-deck unavailable)"
-if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
   exec tmux attach-session -t "$SESSION_NAME"
 fi
 exec tmux new-session -s "$SESSION_NAME" \

@@ -60,6 +60,22 @@ EOF
 check "stale reservation superseded by new admit" \
   "CC_ADMIT_GB=99 CC_MAX_STARTS=9 $L admit --session st2 --repo o/r --ref stale --mem 4"
 
+echo "== zombie reservations expire fleet-wide (crash leftovers must not eat start slots)"
+Z1=$(CC_ADMIT_GB=99 CC_MAX_STARTS=9 $L admit --session z1 --repo o/r --ref zomb1 --mem 4)
+Z2=$(CC_ADMIT_GB=99 CC_MAX_STARTS=9 $L admit --session z2 --repo o/r --ref zomb2 --mem 4)
+for Z in "$Z1" "$Z2"; do
+  F=$(ls "$CC_LEDGER_DIR"/*.json | xargs grep -l "\"$Z\"")
+  python3 - "$F" <<'EOF'
+import json, sys
+rec = json.load(open(sys.argv[1]))
+rec["current"]["boot_id"] = "dead-boot"
+rec["current"]["epoch"] -= 7200
+json.dump(rec, open(sys.argv[1], "w"))
+EOF
+done
+check "admit succeeds despite 2 zombies at max_starts=2" \
+  "CC_ADMIT_GB=99 CC_MAX_STARTS=2 $L admit --session fresh --repo o/r --ref fresh1 --mem 4"
+
 echo "== corrupt record fails closed"
 echo '{broken json' > "$CC_LEDGER_DIR/deadbeefdeadbeefdeadbeef.json"
 check_fails "admit with corrupt ledger file refuses" \

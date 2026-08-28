@@ -100,7 +100,24 @@ def fleet_containers():
 def container_alive(cid):
     r = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", cid],
                        capture_output=True, text=True)
-    return r.returncode == 0 and r.stdout.strip() in ("running", "created", "restarting")
+    if r.returncode != 0:
+        # fail CLOSED on transient docker errors: only a definitive "no such
+        # object" counts as dead — anything else must not let a live session's
+        # reservation be superseded.
+        if "no such object" in (r.stderr or "").lower():
+            return False
+        die(f"probe failed (docker inspect {cid[:12]}): {(r.stderr or '').strip()[:150]}")
+    return r.stdout.strip() in ("running", "created", "restarting")
+
+
+def stale_dead(cur):
+    """Provably-dead attempt: no live container, owner process gone, older than
+    STALE_SECS. Used both per-key (supersede) and fleet-wide (don't let zombies
+    eat start slots / memory budget forever)."""
+    cid = cur.get("container_id")
+    if cid and container_alive(cid):
+        return False
+    return not owner_alive(cur) and time.time() - cur.get("epoch", 0) > STALE_SECS
 
 class locked:
     def __enter__(self):
@@ -130,23 +147,26 @@ def admit(a):
         rec = load(path)
         if rec and rec["current"]["state"] not in TERMINAL:
             cur = rec["current"]
-            cid = cur.get("container_id")
-            live = container_alive(cid) if cid else False
-            age = time.time() - cur.get("epoch", 0)
-            if not live and not owner_alive(cur) and age > STALE_SECS:
+            if stale_dead(cur):
                 cur["state"] = "abandoned"; cur.setdefault("times", {})["abandoned"] = now()
                 cur["fail"] = {"stage": "stale", "msg": "superseded: owner dead, no container"}
                 rec.setdefault("history", []).append(cur)
                 rec["history"] = rec["history"][-5:]
                 rec["current"] = None
+                store(path, rec)   # persist the abandonment so the zombie stops counting
             else:
                 die(f"reservation exists for {repo}@{a.ref}: attempt {cur['attempt_id']} "
                     f"state={cur['state']} session={cur.get('session')}", 2)
         containers = fleet_containers()
-        if len(containers) >= max_sessions:
-            die(f"fleet full: {len(containers)}/{max_sessions} resident sessions", 2)
+        # zombies (crash/reboot leftovers) are excluded fleet-wide — a dead
+        # 'requested' record must not eat a start slot or budget forever
         active = [r["current"] for r in all_records()
-                  if r.get("current") and r["current"]["state"] in ("requested", "starting")]
+                  if r.get("current") and r["current"]["state"] in ("requested", "starting")
+                  and not stale_dead(r["current"])]
+        pending = [x for x in active if not x.get("container_id")]
+        if len(containers) + len(pending) >= max_sessions:
+            die(f"fleet full: {len(containers)} resident + {len(pending)} pending "
+                f"of {max_sessions}", 2)
         if len(active) >= max_starts:
             die(f"{len(active)} spawns already starting (max {max_starts})", 2)
         sum_gb = sum(c["mem_gb"] for c in containers)

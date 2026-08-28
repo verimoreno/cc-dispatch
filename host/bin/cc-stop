@@ -34,8 +34,9 @@ else
   echo "(no running container named '$SESSION')"
 fi
 
-# Kill any leftover plain tmux session (legacy)
-tmux kill-session -t "$SESSION" 2>/dev/null || true
+# Kill any leftover plain tmux session (legacy). '=' = exact match — a bare
+# name prefix-matches and could kill an unrelated session sharing the prefix.
+tmux kill-session -t "=$SESSION" 2>/dev/null || true
 
 # Best-effort ledger transition (running -> stopping); cc-cleanup-worktree marks done
 cc-ledger set-by-session "$SESSION" stopping >/dev/null 2>&1 || true

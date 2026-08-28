@@ -97,6 +97,10 @@ def parse_notes(path, errors):
             entries.append(cur)
         m = RE_STATUS.match(ln)
         if m: cur["status"] = m.group(1); continue
+        if ln.startswith("STATUS:"):
+            errors.append(f"{os.path.basename(path)}: malformed STATUS line "
+                          f"(must be exactly working|done|blocked): {ln[:60]}")
+            continue
         m = RE_PR.match(ln)
         if m:
             cur["unblocks"].append({"type": "pr", "name": m["name"], "repo": m["repo"].lower(),
@@ -136,10 +140,17 @@ def verify_claim(c):
         return True, "commit+path present in local bare repo"
     tok = gh_token()
     if not tok: return None, "no GITHUB_TOKEN available"
-    out = sh(["curl", "-sf", "-H", f"Authorization: token {tok}",
+    # capture the HTTP status: a MISSING PR is a refuted claim (fabricated or wrong
+    # number), which must never be conflated with "API unreachable" = unverifiable
+    out = sh(["curl", "-s", "-w", "\n%{http_code}", "-H", f"Authorization: token {tok}",
               f"https://api.github.com/repos/{c['repo']}/pulls/{c['number']}"], timeout=20)
     if out is None: return None, "GitHub API unreachable"
-    try: pr = json.loads(out)
+    body, _, code = out.rpartition("\n")
+    if code == "404":
+        return False, f"PR #{c['number']} does not exist in {c['repo']} (fabricated or wrong claim)"
+    if not code.startswith("2"):
+        return None, f"GitHub API HTTP {code}"
+    try: pr = json.loads(body)
     except json.JSONDecodeError: return None, "GitHub API response unparseable"
     head = (pr.get("head") or {}).get("sha", "")
     if head != c["sha"]:
@@ -256,6 +267,8 @@ def register_row(text, session, repo_branch, task="", depends="—"):
                 return "".join(lines), "replaced PLANNED row"
     if last_row is None:
         raise ValueError("no Roster table found in PLAN.md")
+    if not lines[last_row].endswith("\n"):
+        lines[last_row] += "\n"   # file without trailing newline must not merge rows
     lines.insert(last_row + 1, f"| {session} | {repo_branch} | {task} | {depends} |\n")
     return "".join(lines), "appended new row"
 

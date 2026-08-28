@@ -90,6 +90,12 @@ if [[ "${CC_SCOPED_TOKEN:-0}" == "1" ]]; then
   fi
 fi
 
+# Per-repo lock: two admitted spawns of DIFFERENT branches of one repo must not
+# race the bare clone/fetch/worktree-add (max-starts=2 makes that reachable).
+mkdir -p "$REPO_DIR"
+exec 8>"$REPO_DIR/.spawn.lock"
+flock -w 300 8 || { echo "ERROR: timed out waiting for per-repo spawn lock" >&2; exit 1; }
+
 # 1. Clone bare repo if missing
 STAGE=clone
 if [[ ! -d "$BARE_DIR" ]]; then
@@ -127,6 +133,8 @@ else
       -b "$BRANCH" "origin/$DEFAULT_BRANCH"
   fi
 fi
+
+exec 8>&-   # release the per-repo lock: container/registration steps can overlap
 
 # 3. Start container if not already running
 STARTED_NOW=0

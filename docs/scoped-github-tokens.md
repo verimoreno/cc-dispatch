@@ -3,7 +3,10 @@
 `cc-github-token <owner/repo>` mints a **single-repo, ~1-hour** GitHub App
 installation token; `CC_SCOPED_TOKEN=1 cc-spawn …` puts it in that session's
 `GITHUB_TOKEN`/`GH_TOKEN` instead of the all-repo PAT. Until the App below
-exists, minting exits 3 and spawns use the default token as before.
+exists, plain spawns are unaffected — but a spawn that explicitly asks for
+`CC_SCOPED_TOKEN=1` **refuses to start** rather than silently falling back to
+the broad PAT (you asked for least privilege; a quiet downgrade would betray
+that). Configure the App first, then use the flag.
 
 ## One-time setup (~5 min, needs the browser)
 

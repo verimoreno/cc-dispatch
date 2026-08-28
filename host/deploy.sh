@@ -81,6 +81,15 @@ check(){
     diff -q "$f" "$SESSIONS/tokens.d/$b" >/dev/null 2>&1 || { echo "DRIFT: $SESSIONS/tokens.d/$b"; drift=1; }
   done
   diff <(live_claude) <(render_claude) >/dev/null 2>&1 || { echo "DRIFT: fleet CLAUDE.md managed region"; drift=1; }
+  # content OUTSIDE the managed regions is exactly how a prompt-injected session
+  # would poison the fleet brain (threat-model R3) — render preserves it, so the
+  # diff above can be clean while the poison persists. Flag it explicitly.
+  stray=$(live_claude | strip_region "$MARK_S" "$MARK_E" | grep -cve '^[[:space:]]*$' || true)
+  if [[ "${stray:-0}" -gt 0 ]]; then
+    echo "DRIFT: fleet CLAUDE.md has $stray line(s) OUTSIDE the managed region — inspect them:"
+    live_claude | strip_region "$MARK_S" "$MARK_E" | grep -ve '^[[:space:]]*$' | head -3 | sed 's/^/    | /'
+    drift=1
+  fi
   diff <(crontab -l 2>/dev/null) <(render_cron) >/dev/null 2>&1 || { echo "DRIFT: crontab managed block"; drift=1; }
   if [[ $drift -eq 0 ]]; then echo "OK: no drift ($REPO_SHA)"; fi
   return $drift
@@ -146,9 +155,11 @@ deploy(){
   local prev=""; [[ -L "$CURRENT" ]] && prev=$(readlink -f "$CURRENT")
   switch_to "$rel"
   { echo "sha: $REPO_SHA"; echo "date: $(date -u +%FT%TZ)"; echo "by: $(id -un)@$(hostname)"; echo "prev: ${prev:-none}"; } > "$rel/DEPLOYED"
-  if ! smoke; then
+  # smoke MUST run in a subshell: die() exits, and outside a subshell that exit
+  # would kill the whole script before the rollback branch ever ran (QA finding)
+  if ! (smoke); then
     if [[ -n "$prev" ]]; then note "smoke FAILED — rolling back to $prev"; switch_to "$prev"; fi
-    die "deploy failed smoke; rolled back"
+    die "deploy failed smoke; rolled back to ${prev:-nothing}"
   fi
   note "deployed $rel"
 }
@@ -159,7 +170,7 @@ rollback(){
   prev=$(sed -n 's/^prev: //p' "$CURRENT/DEPLOYED" 2>/dev/null)
   [[ -n "$prev" && -d "$prev" && "$prev" != "none" ]] || die "no previous release recorded"
   switch_to "$prev"
-  smoke
+  (smoke) || die "rolled back to $prev but smoke STILL fails — manual intervention needed"
   note "rolled back to $prev"
 }
 
