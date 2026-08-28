@@ -8,37 +8,21 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
 <style>
-  /* ForHumans design system tokens (design-system-handoff, 27 Aug 2026) */
+  /* Committed dark theme — clean neutral graphite, no purple.
+     ForHumans traces kept: olive kickers, the serif wordmark, the composition rules. */
   :root {
-    --ground: #f7f7f7; --surface: #ffffff; --surface-2: #f2eee3;
-    --ink: #21021d; --ink-soft: #4a4548; --ink-faint: #7c757a;
-    --line: #e3ded4; --line-strong: #cfc9bc;
-    --accent: #6559c0; --accent-soft: #ddd8fe; --accent-edge: #c1b9fe;
-    --olive: #a3a180; --olive-ink: #5f5d43;
-    --danger: #b3261e; --ok: #3c7a5e;
+    --ground: #0e1116; --surface: #151a21; --surface-2: #1b222c;
+    --ink: #e6e9ee; --ink-soft: #aab2bc; --ink-faint: #7a828c;
+    --line: #262d36; --line-strong: #3a434e;
+    --accent: #58a6ff; --accent-soft: rgba(88,166,255,0.13); --accent-edge: #3d70b8;
+    --olive: #a3a180; --olive-ink: #b3b190;
+    --danger: #f47067; --ok: #3fb950;
     --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
     --sans: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --wide: 1280px;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --ground: #170114; --surface: #21021d; --surface-2: #2a0a26;
-      --ink: #eae3d2; --ink-soft: #bdb3a4; --ink-faint: #8e8378;
-      --line: #3a1f36; --line-strong: #553550;
-      --accent: #c1b9fe; --accent-soft: #33266b; --accent-edge: #5c4bb0;
-      --olive: #a3a180; --olive-ink: #b3b190;
-      --danger: #ef8b84; --ok: #7dc0a1;
-    }
-  }
-  :root[data-theme="dark"] {
-    --ground: #170114; --surface: #21021d; --surface-2: #2a0a26;
-    --ink: #eae3d2; --ink-soft: #bdb3a4; --ink-faint: #8e8378;
-    --line: #3a1f36; --line-strong: #553550;
-    --accent: #c1b9fe; --accent-soft: #33266b; --accent-edge: #5c4bb0;
-    --olive: #a3a180; --olive-ink: #b3b190;
-    --danger: #ef8b84; --ok: #7dc0a1;
-  }
+
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--ground); color: var(--ink);
