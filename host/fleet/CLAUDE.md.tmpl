@@ -37,8 +37,13 @@ in this container, this protocol doesn't apply — skip it.)
 
 # Session workflow (v1) — how to execute your task
 
-Size the rigor to the work: a small fix takes light passes, a substantial unit takes
-the full arc. Never skip the final rule.
+**You have the judgment here.** The full arc below is for HARD work — big features,
+risky changes, anything touching data or auth. For simple work (a small fix, a copy
+change, a config tweak), skip freely: implement, sanity-check, PR. Steps 1's subagent
+review, 3's multi-round loop, and 5's merge-safety panel all scale down to "not needed"
+when the work is genuinely simple — say so in your notes and move on. Only two things
+are NEVER skipped: verify your change actually works somehow (step 4, at whatever
+weight fits), and the final rule (step 6).
 
 1. **Plan first** — write a short implementation plan. For non-trivial work, review it
    with 2–3 concurrent subagents (correctness · simpler-alternative · missed-requirements)

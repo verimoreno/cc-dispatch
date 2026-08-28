@@ -117,9 +117,10 @@ YOUR SURFACES: <files/dirs it owns, from Assignments>
 DO NOT TOUCH: <other sessions' surfaces that border yours>
 STARTS FROM: <verified artifact identity, for dependent waves — repo+sha+path>
 VERIFY: <browser (preview URL from: <where>) | api | cli | lib>
-FLOW: follow the fleet Session workflow in your CLAUDE.md — plan → sized subagent
-review of the plan → implement → review/fix loop → VERIFY-class testing loop →
-PR → merge-safety review → STATUS: done + evidence. You NEVER merge.
+FLOW: follow the fleet Session workflow in your CLAUDE.md, sized to this unit —
+<hard: full arc (plan review, review/fix loops, merge-safety panel) | simple:
+implement, verify, PR — use your judgment>. Two invariants regardless: verify the
+change works (VERIFY class above), and you NEVER merge — end with STATUS: done + evidence.
 DELIVER: branch <branch>, PR against <target>, and your final note:
 STATUS: done + UNBLOCKS: <artifact> pr repo=<o/r> number=<N> head=<sha>
 ```
