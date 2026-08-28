@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Parser fixtures for cc-plan (protocol v1). Pure — no docker/host state needed."""
 import importlib.machinery, importlib.util, os, sys, unittest
+sys.dont_write_bytecode = True  # keep host/bin free of __pycache__
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 loader = importlib.machinery.SourceFileLoader("ccplan", os.path.join(HERE, "..", "bin", "cc-plan"))

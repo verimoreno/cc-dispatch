@@ -89,6 +89,7 @@ check(){
 validate(){
   local f
   for f in "$HOST_DIR"/bin/*; do
+    [[ -f "$f" ]] || continue   # skip stray dirs (e.g. __pycache__ from test imports)
     case "$(head -1 "$f")" in
       *bash*)    bash -n "$f" || die "syntax: $f" ;;
       *python3*) python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f" || die "syntax: $f" ;;
