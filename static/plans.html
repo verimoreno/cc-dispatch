@@ -162,6 +162,22 @@
   .meta span.ev-bad { color: var(--danger); border-color: currentColor; }
   svg.edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 
+  /* view toggle (list | graph) */
+  .vtoggle {
+    display: inline-flex; gap: 2px; padding: 2px; margin-left: auto;
+    background: var(--ground); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .vtoggle button {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--ink-faint); background: none; border: none; border-radius: 6px;
+    padding: 4px 12px; cursor: pointer;
+  }
+  .vtoggle button.on { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+
+  /* dependency graph view */
+  .depwrap { overflow-x: auto; padding: 14px 4px 8px; }
+  svg.depgraph { display: block; }
+
   /* attention + errors */
   .contras {
     margin-top: 14px; background: var(--surface-2); border: 1px solid var(--line);
@@ -302,6 +318,136 @@ function sessionCard(s) {
   return box;
 }
 
+const STATE_COLOR = { working: "var(--accent)", done: "var(--ok)", blocked: "var(--danger)" };
+
+function renderGraph(p) {
+  const wrap = el("div", "depwrap");
+  const sessions = p.sessions || [];
+  if (!sessions.length) { wrap.append(el("p", "tk", "No sessions in this plan.")); return wrap; }
+
+  const depths = new Map(sessions.map((s) => [s.name, depth(s, sessions, new Set())]));
+  const cols = new Map();
+  for (const s of sessions) {
+    const d = depths.get(s.name);
+    if (!cols.has(d)) cols.set(d, []);
+    cols.get(d).push(s);
+  }
+  const order = new Map();
+  for (const d of [...cols.keys()].sort((a, b) => a - b)) {
+    const list = cols.get(d);
+    if (d > 0) list.sort((a, b) => {
+      const bary = (s) => {
+        const ps = depTokens(s).filter((n) => order.has(n)).map((n) => order.get(n));
+        return ps.length ? ps.reduce((x, y) => x + y, 0) / ps.length : 0;
+      };
+      return bary(a) - bary(b);
+    });
+    list.forEach((s, i) => order.set(s.name, i));
+  }
+
+  const NW = 216, NH = 58, GX = 120, GY = 26, PAD = 16;
+  const pos = new Map();
+  for (const [d, list] of cols)
+    list.forEach((s, i) => pos.set(s.name, { x: PAD + d * (NW + GX), y: PAD + 20 + i * (NH + GY) }));
+  const maxD = Math.max(...cols.keys());
+  const W = PAD * 2 + (maxD + 1) * NW + maxD * GX;
+  const H = PAD * 2 + 24 + Math.max(...[...cols.values()].map((l) => l.length)) * (NH + GY) - GY;
+
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class", "depgraph");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  const mk = (tag, attrs, text) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  const defs = mk("defs", {});
+  for (const [id, color] of [["dg-ok", "var(--ok)"], ["dg-mut", "var(--line-strong)"]]) {
+    const m = mk("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5,
+                             markerWidth: 6.5, markerHeight: 6.5, orient: "auto" });
+    const path = mk("path", { d: "M0 0L10 5L0 10z" });
+    path.style.fill = color;
+    m.append(path); defs.append(m);
+  }
+  svg.append(defs);
+
+  for (const d of cols.keys()) {
+    const hdr = mk("text", { x: PAD + d * (NW + GX), y: PAD + 6, "font-size": 10,
+                             "letter-spacing": "0.12em" }, `WAVE ${d + 1}`);
+    hdr.style.fill = "var(--ink-faint)";
+    hdr.style.fontFamily = "var(--mono)";
+    svg.append(hdr);
+  }
+
+  for (const s of sessions) {
+    for (const dep of depTokens(s)) {
+      if (!pos.has(dep) || dep === s.name) continue;
+      const a = pos.get(dep), b = pos.get(s.name);
+      const up = sessions.find((x) => x.name === dep);
+      const okEdge = up && up.state === "done";
+      const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x - 7, y2 = b.y + NH / 2;
+      const mx = (x1 + x2) / 2;
+      const path = mk("path", {
+        d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
+        fill: "none", "stroke-width": 1.7,
+        "marker-end": okEdge ? "url(#dg-ok)" : "url(#dg-mut)",
+      });
+      path.style.stroke = okEdge ? "var(--ok)" : "var(--line-strong)";
+      if (!okEdge) path.setAttribute("stroke-dasharray", "5 4");
+      svg.append(path);
+      const art = (up && up.unblocks || [])[0];
+      if (art) {
+        const lbl = mk("text", { x: mx, y: (y1 + y2) / 2 - 6, "font-size": 9.5,
+                                 "text-anchor": "middle" },
+          `${art.name}${art.verified === true ? " ✓" : art.verified === false ? " ✗" : ""}`);
+        lbl.style.fill = art.verified === false ? "var(--danger)" : okEdge ? "var(--ok)" : "var(--ink-faint)";
+        lbl.style.fontFamily = "var(--mono)";
+        svg.append(lbl);
+      }
+    }
+  }
+
+  for (const s of sessions) {
+    const { x, y } = pos.get(s.name);
+    const g = mk("g", {});
+    const box = mk("rect", { x, y, width: NW, height: NH, rx: 8 });
+    box.style.fill = "var(--ground)";
+    box.style.stroke = STATE_COLOR[s.state] || "var(--line-strong)";
+    box.style.strokeWidth = "1.4";
+    if (s.state === "waiting-to-spawn") box.setAttribute("stroke-dasharray", "5 4");
+    g.append(box);
+    const dot = mk("circle", { cx: x + 14, cy: y + 17, r: 4 });
+    dot.style.fill = STATE_COLOR[s.state] || "var(--ink-faint)";
+    g.append(dot);
+    const stl = mk("text", { x: x + 24, y: y + 21, "font-size": 9.5, "letter-spacing": "0.08em" },
+      (s.state || "unknown").replace(/-/g, " ").toUpperCase());
+    stl.style.fill = STATE_COLOR[s.state] || "var(--ink-faint)";
+    stl.style.fontFamily = "var(--mono)";
+    g.append(stl);
+    const age = rel(s.note_age_min);
+    if (age) {
+      const at = mk("text", { x: x + NW - 10, y: y + 21, "font-size": 9.5, "text-anchor": "end" }, age);
+      at.style.fill = "var(--ink-faint)";
+      at.style.fontFamily = "var(--mono)";
+      g.append(at);
+    }
+    const name = s.name.length > 30 ? s.name.slice(0, 29) + "…" : s.name;
+    const nt = mk("text", { x: x + 14, y: y + 42, "font-size": 11.5 }, name);
+    nt.style.fill = "var(--ink)";
+    nt.style.fontFamily = "var(--mono)";
+    g.append(nt);
+    g.append(mk("title", {}, s.name + "\n" + (s.task || "") + "\n" + (s.repo_branch || "")));
+    svg.append(g);
+  }
+  wrap.append(svg);
+  const nEdges = sessions.reduce((n, s) => n + depTokens(s).filter((d) => pos.has(d) && d !== s.name).length, 0);
+  if (!nEdges) wrap.append(el("p", "plan-meta", "no dependencies — fully parallel wave"));
+  return wrap;
+}
+
 function renderPlan(p) {
   const card = el("section", "plan");
   const head = el("div", "plan-head");
@@ -331,7 +477,28 @@ function renderPlan(p) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "edges");
   board.append(svg);
-  card.append(board);
+
+  // list | graph toggle (persisted per plan; graph = the dependency diagram)
+  const viewKey = "ccview-" + p.plan;
+  let view; try { view = localStorage.getItem(viewKey) || "list"; } catch { view = "list"; }
+  const toggle = el("div", "vtoggle");
+  const bList = el("button", view === "list" ? "on" : "", "list");
+  const bGraph = el("button", view === "graph" ? "on" : "", "graph");
+  toggle.append(bList, bGraph);
+  head.append(toggle);
+  const body = el("div");
+  const show = (v) => {
+    view = v;
+    try { localStorage.setItem(viewKey, v); } catch {}
+    bList.className = v === "list" ? "on" : "";
+    bGraph.className = v === "graph" ? "on" : "";
+    body.replaceChildren(v === "graph" ? renderGraph(p) : board);
+    if (v === "list") drawEdges();
+  };
+  bList.addEventListener("click", () => show("list"));
+  bGraph.addEventListener("click", () => show("graph"));
+  card.append(body);
+  body.append(view === "graph" ? renderGraph(p) : board);
 
   const contras = (p.contradictions || []), perrs = (p.parser_errors || []);
   if (contras.length || perrs.length) {
@@ -366,7 +533,8 @@ function renderPlan(p) {
     tbl.append(tb); wrapT.append(tbl); det.append(wrapT); card.append(det);
   }
 
-  requestAnimationFrame(() => {
+  const drawEdges = () => requestAnimationFrame(() => {
+    if (!board.isConnected) return;
     const br = board.getBoundingClientRect();
     svg.setAttribute("width", board.scrollWidth);
     svg.setAttribute("height", board.scrollHeight);
@@ -393,6 +561,7 @@ function renderPlan(p) {
       }
     }
   });
+  if (view === "list") drawEdges();
   return card;
 }
 
