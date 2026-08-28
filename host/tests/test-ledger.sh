@@ -61,6 +61,7 @@ check "stale reservation superseded by new admit" \
   "CC_ADMIT_GB=99 CC_MAX_STARTS=9 $L admit --session st2 --repo o/r --ref stale --mem 4"
 
 echo "== zombie reservations expire fleet-wide (crash leftovers must not eat start slots)"
+export CC_LEDGER_DIR="$TMP/ledger-zombie"   # isolated: earlier sections' live records must not gate this
 Z1=$(CC_ADMIT_GB=99 CC_MAX_STARTS=9 $L admit --session z1 --repo o/r --ref zomb1 --mem 4)
 Z2=$(CC_ADMIT_GB=99 CC_MAX_STARTS=9 $L admit --session z2 --repo o/r --ref zomb2 --mem 4)
 for Z in "$Z1" "$Z2"; do
