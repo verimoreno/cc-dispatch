@@ -88,7 +88,7 @@
     text-transform: uppercase; color: var(--olive-ink); padding: 2px 8px 6px;
   }
   .session-card {
-    padding: 11px 13px; border-radius: 12px; cursor: pointer;
+    padding: 9px 12px; border-radius: 8px; cursor: pointer;
     border: 1px solid var(--line); background: var(--surface);
     transition: border-color 0.12s;
   }
@@ -118,7 +118,7 @@
     color: var(--ink-soft); text-align: center; padding: 34px 12px 28px;
     background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px;
   }
-  .empty-sidebar .v { font-family: var(--serif); font-size: 21px; line-height: 1.15; }
+  .empty-sidebar .v { font-weight: 600; font-size: 14.5px; }
   .empty-sidebar .a { display: block; margin-top: 12px; font-size: 12.5px; color: var(--accent); }
 
   /* ── compose panel ── */
@@ -137,10 +137,10 @@
     flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px;
   }
   .no-session .card {
-    background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px;
-    padding: 42px 38px 34px; position: relative; min-width: min(420px, 90%);
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 30px 30px 26px; position: relative; min-width: min(400px, 90%);
   }
-  .no-session .v { font-family: var(--serif); font-size: 27px; line-height: 1.1; }
+  .no-session .v { font-weight: 600; font-size: 16.5px; }
   .no-session .a { margin-top: 16px; font-size: 13.5px; color: var(--accent); }
 
   .prompt-wrap { display: flex; flex-direction: column; gap: 10px; }
@@ -150,7 +150,7 @@
   }
   textarea {
     background: var(--ground); border: 1px solid var(--line);
-    border-radius: 12px; color: var(--ink);
+    border-radius: 9px; color: var(--ink);
     font-size: 14.5px; font-family: var(--sans);
     padding: 13px 15px; resize: vertical; min-height: 130px;
     outline: none; transition: border-color 0.15s; line-height: 1.55;
@@ -171,8 +171,8 @@
 
   /* ── drop zone ── */
   .dropzone {
-    border: 2px dashed var(--line-strong); border-radius: 12px;
-    padding: 24px 20px; text-align: center; color: var(--ink-faint);
+    border: 1.5px dashed var(--line-strong); border-radius: 9px;
+    padding: 18px 16px; text-align: center; color: var(--ink-faint);
     font-size: 13px; cursor: pointer; position: relative;
     transition: border-color 0.15s, background 0.15s;
   }
@@ -240,10 +240,10 @@
   .modal-backdrop.open { opacity: 1; pointer-events: all; }
   .modal {
     background: var(--surface); border: 1px solid var(--line);
-    border-radius: 14px; padding: 26px; width: 380px;
+    border-radius: 10px; padding: 22px; width: 380px;
     display: flex; flex-direction: column; gap: 16px;
   }
-  .modal h2 { font-family: var(--serif); font-size: 26px; font-weight: 400; line-height: 1.05; }
+  .modal h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
   .field { display: flex; flex-direction: column; gap: 7px; }
   .field input, .field select {
     background: var(--ground); border: 1px solid var(--line);

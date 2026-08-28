@@ -42,7 +42,7 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--ground); color: var(--ink);
-    font-family: var(--sans); font-size: 16px; line-height: 1.55;
+    font-family: var(--sans); font-size: 14.5px; line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
   h1, h2 { font-family: var(--serif); font-weight: 400; letter-spacing: -0.01em; text-wrap: balance; }
@@ -73,13 +73,14 @@
   #refresh-chip[data-err="1"] { color: var(--danger); border-color: var(--danger); }
 
   /* masthead */
-  .mast { padding: 44px 0 30px; }
+  .mast { padding: 26px 0 20px; }
   .eyebrow {
     font-size: 11.5px; letter-spacing: 0.16em; text-transform: uppercase;
     color: var(--olive-ink); font-weight: 600; margin: 0;
   }
-  .mast h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.02; margin: 14px 0 0; }
-  .mast h1 em { font-style: italic; color: var(--accent); }
+  .mast h1 { font-family: var(--sans); font-weight: 700; letter-spacing: -0.02em;
+    font-size: clamp(24px, 3vw, 32px); line-height: 1.05; margin: 10px 0 0; }
+  .mast h1 em { font-style: normal; color: var(--accent); }
 
   /* KPI row — hero numbers, labels always present */
   .kpis {
@@ -88,10 +89,10 @@
   }
   .kpi {
     background: var(--surface); border: 1px solid var(--line);
-    border-radius: 14px; padding: 14px 18px 12px;
+    border-radius: 10px; padding: 12px 16px 10px;
   }
   .kpi .n {
-    font-family: var(--serif); font-size: 34px; line-height: 1;
+    font-family: var(--mono); font-weight: 500; font-size: 24px; line-height: 1;
     font-variant-numeric: tabular-nums;
   }
   .kpi .k {
@@ -105,7 +106,7 @@
   /* plan card */
   .plan {
     background: var(--surface); border: 1px solid var(--line);
-    border-radius: 14px; padding: 24px 26px 22px; margin: 22px 0;
+    border-radius: 10px; padding: 18px 20px 16px; margin: 16px 0;
   }
   .plan-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
   .plan-head h2 { font-size: 15px; margin: 0; font-family: var(--mono); letter-spacing: 0; }
@@ -119,8 +120,8 @@
   .badge.st-closed { color: var(--ink-faint); }
   .badge.plain { color: var(--ink-faint); font-weight: 500; border-color: var(--line-strong); }
   .goal {
-    font-family: var(--serif); font-size: clamp(21px, 2.6vw, 27px);
-    line-height: 1.22; margin: 12px 0 4px; max-width: 62ch; text-wrap: balance;
+    font-size: 14px; color: var(--ink-soft); line-height: 1.55;
+    margin: 10px 0 2px; max-width: 78ch;
   }
   .plan-meta {
     font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint);
@@ -129,8 +130,8 @@
 
   /* the dependency board */
   .board {
-    position: relative; display: flex; gap: 64px; align-items: flex-start;
-    overflow-x: auto; padding: 18px 6px 10px;
+    position: relative; display: flex; gap: 48px; align-items: flex-start;
+    overflow-x: auto; padding: 14px 4px 8px;
   }
   .col { display: flex; flex-direction: column; gap: 16px; min-width: 250px; }
   .col-k {
@@ -139,7 +140,7 @@
   }
   .sess {
     background: var(--ground); border: 1px solid var(--line);
-    border-radius: 12px; padding: 13px 15px; position: relative;
+    border-radius: 8px; padding: 11px 13px; position: relative;
   }
   .sess-top { display: flex; align-items: center; gap: 8px; }
   .st {
@@ -179,8 +180,8 @@
 
   /* attention + errors */
   .contras {
-    margin-top: 16px; background: var(--surface-2); border: 1px solid var(--line);
-    border-radius: 12px; padding: 14px 18px;
+    margin-top: 14px; background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 16px;
   }
   .contras .kicker {
     font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
@@ -220,7 +221,7 @@
     background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px;
     padding: 46px 34px 38px; margin-top: 26px; position: relative; min-height: 150px;
   }
-  .empty .verdict-line { font-family: var(--serif); font-size: 30px; line-height: 1.1; margin: 0; }
+  .empty .verdict-line { font-weight: 600; font-size: 18px; line-height: 1.2; margin: 0; }
   .empty .arrow {
     position: absolute; left: 30px; bottom: 22px;
     font-size: 14px; color: var(--accent); text-decoration: none;
