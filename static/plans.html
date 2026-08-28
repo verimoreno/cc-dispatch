@@ -4,48 +4,266 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plan Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
 <style>
-  :root{
-    --bg:#12181E; --panel:#1A222A; --ink:#E4E9ED; --muted:#8B98A5; --line:#2C3641;
-    --working:#43AEB7; --done:#5DBB63; --blocked:#E06C5C; --wait:#8B98A5; --warn:#D89A4E;
+  /* ForHumans design system tokens (design-system-handoff, 27 Aug 2026) */
+  :root {
+    --ground: #f7f7f7; --surface: #ffffff; --surface-2: #f2eee3;
+    --ink: #21021d; --ink-soft: #4a4548; --ink-faint: #7c757a;
+    --line: #e3ded4; --line-strong: #cfc9bc;
+    --accent: #6559c0; --accent-soft: #ddd8fe; --accent-edge: #c1b9fe;
+    --olive: #a3a180; --olive-ink: #5f5d43;
+    --danger: #b3261e; --ok: #3c7a5e;
+    --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+    --sans: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --wide: 1280px;
   }
-  @media (prefers-color-scheme: light){
-    :root{ --bg:#F4F6F7; --panel:#FFF; --ink:#1B232C; --muted:#5A6673; --line:#D8DEE3;
-           --working:#0E7C86; --done:#2E7D32; --blocked:#C62828; --wait:#5A6673; --warn:#B0742C; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #170114; --surface: #21021d; --surface-2: #2a0a26;
+      --ink: #eae3d2; --ink-soft: #bdb3a4; --ink-faint: #8e8378;
+      --line: #3a1f36; --line-strong: #553550;
+      --accent: #c1b9fe; --accent-soft: #33266b; --accent-edge: #5c4bb0;
+      --olive: #a3a180; --olive-ink: #b3b190;
+      --danger: #ef8b84; --ok: #7dc0a1;
+    }
   }
-  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);
-    font:15px/1.5 "IBM Plex Sans",system-ui,sans-serif;padding:24px}
-  h1{font-size:22px;margin:0 0 4px} .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
-  .plan{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-    padding:18px 20px;margin-bottom:22px}
-  .plan h2{margin:0;font-size:17px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-  .badge{font:600 10.5px/1 ui-monospace,monospace;letter-spacing:.05em;padding:4px 9px;
-    border-radius:999px;border:1px solid var(--line);color:var(--muted)}
-  .goal{color:var(--muted);font-size:13.5px;margin:.4em 0 1em;max-width:80ch}
-  .board{position:relative;display:flex;gap:56px;align-items:flex-start;overflow-x:auto;padding:8px 4px}
-  .col{display:flex;flex-direction:column;gap:14px;min-width:230px}
-  .sess{border:1.5px solid var(--wait);border-radius:10px;padding:10px 13px;background:var(--bg);position:relative}
-  .sess .nm{font:600 12.5px ui-monospace,monospace;word-break:break-all}
-  .sess .tk{font-size:12px;color:var(--muted);margin-top:3px}
-  .sess .meta{font:11px ui-monospace,monospace;color:var(--muted);margin-top:6px}
-  .sess.working{border-color:var(--working)} .sess.working .st{color:var(--working)}
-  .sess.done{border-color:var(--done)} .sess.done .st{color:var(--done)}
-  .sess.blocked{border-color:var(--blocked)} .sess.blocked .st{color:var(--blocked)}
-  .sess.waiting-to-spawn{border-style:dashed;opacity:.75}
-  .st{font:600 11px ui-monospace,monospace;letter-spacing:.05em;text-transform:uppercase}
-  svg.edges{position:absolute;inset:0;pointer-events:none;overflow:visible}
-  .contras{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
-  .contras div{font:12.5px ui-monospace,monospace;color:var(--warn);margin:3px 0}
-  .perr div{font:12px ui-monospace,monospace;color:var(--blocked);margin:2px 0}
-  .empty{color:var(--muted)} .err{color:var(--blocked)}
-  a{color:var(--working)}
+  :root[data-theme="dark"] {
+    --ground: #170114; --surface: #21021d; --surface-2: #2a0a26;
+    --ink: #eae3d2; --ink-soft: #bdb3a4; --ink-faint: #8e8378;
+    --line: #3a1f36; --line-strong: #553550;
+    --accent: #c1b9fe; --accent-soft: #33266b; --accent-edge: #5c4bb0;
+    --olive: #a3a180; --olive-ink: #b3b190;
+    --danger: #ef8b84; --ok: #7dc0a1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2 { font-family: var(--serif); font-weight: 400; letter-spacing: -0.01em; text-wrap: balance; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+  .wrap { max-width: var(--wide); margin: 0 auto; padding: 0 28px; }
+
+  /* top bar */
+  .bar {
+    position: sticky; top: 0; z-index: 40;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(10px); border-bottom: 1px solid var(--line);
+  }
+  .bar-in { display: flex; align-items: center; gap: 18px; height: 52px; }
+  .bar-mark { font-family: var(--serif); font-size: 19px; }
+  .bar-nav { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .bar-nav a {
+    font-size: 12.5px; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--ink-soft); text-decoration: none; padding: 6px 12px;
+    border-radius: 999px; border: 1px solid transparent;
+  }
+  .bar-nav a:hover { border-color: var(--line-strong); color: var(--ink); }
+  #refresh-chip {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-soft);
+    border: 1px solid var(--line-strong); border-radius: 999px;
+    padding: 6px 13px; background: var(--surface); cursor: pointer;
+  }
+  #refresh-chip[data-err="1"] { color: var(--danger); border-color: var(--danger); }
+
+  /* masthead */
+  .mast { padding: 44px 0 30px; }
+  .eyebrow {
+    font-size: 11.5px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--olive-ink); font-weight: 600; margin: 0;
+  }
+  .mast h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.02; margin: 14px 0 0; }
+  .mast h1 em { font-style: italic; color: var(--accent); }
+
+  /* KPI row — hero numbers, labels always present */
+  .kpis {
+    display: grid; gap: 14px; margin: 26px 0 8px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 14px; padding: 14px 18px 12px;
+  }
+  .kpi .n {
+    font-family: var(--serif); font-size: 34px; line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi .k {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--olive-ink); margin-top: 6px;
+  }
+  .kpi[data-tone="ok"] .n { color: var(--ok); }
+  .kpi[data-tone="danger"] .n { color: var(--danger); }
+  .kpi[data-tone="accent"] .n { color: var(--accent); }
+
+  /* plan card */
+  .plan {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 14px; padding: 24px 26px 22px; margin: 22px 0;
+  }
+  .plan-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .plan-head h2 { font-size: 15px; margin: 0; font-family: var(--mono); letter-spacing: 0; }
+  .plan-head h2 span { color: var(--olive-ink); }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; padding: 3px 11px;
+    border-radius: 999px; border: 1px solid currentColor;
+  }
+  .badge.st-active { color: var(--ok); }
+  .badge.st-closed { color: var(--ink-faint); }
+  .badge.plain { color: var(--ink-faint); font-weight: 500; border-color: var(--line-strong); }
+  .goal {
+    font-family: var(--serif); font-size: clamp(21px, 2.6vw, 27px);
+    line-height: 1.22; margin: 12px 0 4px; max-width: 62ch; text-wrap: balance;
+  }
+  .plan-meta {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint);
+    margin-bottom: 6px;
+  }
+
+  /* the dependency board */
+  .board {
+    position: relative; display: flex; gap: 64px; align-items: flex-start;
+    overflow-x: auto; padding: 18px 6px 10px;
+  }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 250px; }
+  .col-k {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  .sess {
+    background: var(--ground); border: 1px solid var(--line);
+    border-radius: 12px; padding: 13px 15px; position: relative;
+  }
+  .sess-top { display: flex; align-items: center; gap: 8px; }
+  .st {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 2px 10px; border-radius: 999px; border: 1.5px solid currentColor;
+    font-family: var(--sans);
+  }
+  .st::before { content: ""; width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+  .sess.working .st { color: var(--accent); }
+  .sess.done .st { color: var(--ok); }
+  .sess.blocked .st { color: var(--danger); }
+  .sess.waiting-to-spawn .st, .sess.unknown .st, .sess.no-notes-yet .st { color: var(--ink-faint); }
+  .sess.waiting-to-spawn { border-style: dashed; background: transparent; }
+  .fresh {
+    margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .fresh i {
+    width: 7px; height: 7px; border-radius: 999px; display: inline-block; font-style: normal;
+    background: var(--ink-faint);
+  }
+  .fresh[data-age="fresh"] i { background: var(--ok); }
+  .fresh[data-age="aging"] i { background: var(--olive); }
+  .fresh[data-age="stale"] i { background: var(--danger); }
+  .nm { font-family: var(--mono); font-size: 13px; margin-top: 9px; word-break: break-all; }
+  .tk { font-size: 13.5px; color: var(--ink-soft); margin-top: 3px; max-width: 40ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .meta span {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-soft);
+    border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
+    background: var(--surface);
+  }
+  .meta span.ev-ok { color: var(--ok); border-color: currentColor; }
+  .meta span.ev-bad { color: var(--danger); border-color: currentColor; }
+  svg.edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+
+  /* attention + errors */
+  .contras {
+    margin-top: 16px; background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px 18px;
+  }
+  .contras .kicker {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--danger); margin-bottom: 8px; font-weight: 600;
+  }
+  .contras div.row {
+    font-size: 13.5px; color: var(--ink-soft); padding: 4px 0;
+    display: flex; gap: 9px; align-items: baseline;
+  }
+  .contras div.row b {
+    font-family: var(--mono); font-size: 11.5px; color: var(--danger); font-weight: 600;
+    white-space: nowrap;
+  }
+  .contras div.row.perr b { color: var(--olive-ink); }
+
+  /* assignments */
+  details.assign { margin-top: 14px; }
+  details.assign summary {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--olive-ink); cursor: pointer;
+  }
+  .tablewrap {
+    overflow-x: auto; margin-top: 10px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--surface);
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+  th {
+    font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--olive-ink); font-weight: 600;
+  }
+  tr:last-child td { border-bottom: 0; }
+  td.own { font-family: var(--mono); font-size: 12px; }
+
+  /* empty state — a resolved answer, not a call to arms */
+  .empty {
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px;
+    padding: 46px 34px 38px; margin-top: 26px; position: relative; min-height: 150px;
+  }
+  .empty .verdict-line { font-family: var(--serif); font-size: 30px; line-height: 1.1; margin: 0; }
+  .empty .arrow {
+    position: absolute; left: 30px; bottom: 22px;
+    font-size: 14px; color: var(--accent); text-decoration: none;
+  }
+  .empty .arrow:hover { text-decoration: underline; }
+
+  footer { padding: 34px 0 60px; color: var(--ink-faint); font-size: 13px; }
+  footer code { font-family: var(--mono); font-size: 12px; }
+
+  @media (max-width: 640px) { .wrap { padding: 0 18px; } .board { gap: 40px; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
-<h1>Plan Board</h1>
-<div class="sub">read-only view of /opt/cc-notes · <span id="stamp">loading…</span> ·
-  auto-refresh 30s · <a href="/">dashboard</a></div>
-<div id="root"></div>
+
+<div class="bar">
+  <div class="wrap bar-in">
+    <span class="bar-mark">cc-dispatch · Plan Board</span>
+    <nav class="bar-nav">
+      <a href="/">Dashboard</a>
+      <button id="refresh-chip" title="Refresh now">loading…</button>
+    </nav>
+  </div>
+</div>
+
+<header class="mast">
+  <div class="wrap">
+    <p class="eyebrow">Fleet coordination · /opt/cc-notes · read-only projection</p>
+    <h1 id="headline">Reading the fleet<em>…</em></h1>
+    <div class="kpis" id="kpis" hidden></div>
+  </div>
+</header>
+
+<main class="wrap" id="root"></main>
+
+<footer>
+  <div class="wrap">
+    <p>Rendered from <code>cc-plan json --all</code> (schema 1) · states and evidence are
+    machine-verified claims, never inferred · archived plans live in
+    <code>/opt/cc-notes/archive/</code> and the private mirror.</p>
+  </div>
+</footer>
+
 <script>
 "use strict";
 const el = (tag, cls, text) => {
@@ -54,50 +272,73 @@ const el = (tag, cls, text) => {
   if (text !== undefined) e.textContent = text;
   return e;
 };
+const rel = (min) => min == null ? null
+  : min < 1 ? "just now" : min < 60 ? `${min}m ago`
+  : min < 1440 ? `${Math.round(min / 60)}h ago` : `${Math.round(min / 1440)}d ago`;
+const ageBand = (min) => min == null ? "none" : min <= 20 ? "fresh" : min <= 120 ? "aging" : "stale";
 
-// depends_on is matched by exact name tokens, never substrings — "api" must not
-// draw an edge to "api-v2" just because one name contains the other.
 function depTokens(sess) {
   return (sess.depends_on || "").split(/[^A-Za-z0-9._-]+/).filter(Boolean);
 }
 function depth(sess, all, seen) {
-  if (seen.has(sess.name)) return 0;              // cycle guard
+  if (seen.has(sess.name)) return 0;
   seen.add(sess.name);
   const deps = depTokens(sess);
   if (!deps.length) return 0;
   let d = 0;
   for (const other of all)
     if (other.name !== sess.name && deps.includes(other.name))
-      d = Math.max(d, 1 + depth(other, all, new Set(seen))); // fresh set per branch: siblings must not mask depth
+      d = Math.max(d, 1 + depth(other, all, new Set(seen)));
   return d;
 }
 
+function sessionCard(s) {
+  const box = el("article", "sess " + (s.state || "unknown"));
+  const top = el("div", "sess-top");
+  top.append(el("span", "st", (s.state || "unknown").replace(/-/g, " ")));
+  const fr = el("span", "fresh");
+  fr.dataset.age = ageBand(s.note_age_min);
+  fr.append(el("i"), document.createTextNode(rel(s.note_age_min) ?? (s.planned ? "not spawned" : "no notes")));
+  top.append(fr);
+  box.append(top);
+  box.append(el("div", "nm", s.name));
+  if (s.task) box.append(el("div", "tk", s.task));
+  const meta = el("div", "meta");
+  if (s.repo_branch) meta.append(el("span", null, s.repo_branch));
+  if (s.ledger_state) meta.append(el("span", null, "ledger " + s.ledger_state));
+  if (s.container) meta.append(el("span", null, s.container.startsWith("Up") ? "container up" : s.container.toLowerCase()));
+  else if (!s.planned) meta.append(el("span", null, "no container"));
+  for (const u of s.unblocks || []) {
+    const cls = u.verified === true ? "ev-ok" : u.verified === false ? "ev-bad" : null;
+    meta.append(el("span", cls, `⬆ ${u.name} · ${u.type}` +
+      (u.verified === true ? " ✓" : u.verified === false ? " ✗" : "")));
+  }
+  if (meta.children.length) box.append(meta);
+  return box;
+}
+
 function renderPlan(p) {
-  const card = el("div", "plan");
-  const h = el("h2"); h.append(el("span", null, p.plan), el("span", "badge", p.status || "?"));
-  if (p.orchestrator) h.append(el("span", "badge", "orch: " + p.orchestrator));
-  card.append(h);
-  if (p.error) { card.append(el("div", "err", p.error)); return card; }
-  if (p.goal) card.append(el("div", "goal", p.goal));
+  const card = el("section", "plan");
+  const head = el("div", "plan-head");
+  const h = el("h2"); h.append(el("span", null, p.plan)); head.append(h);
+  const st = (p.status || "?").split(" ")[0];
+  head.append(el("span", "badge st-" + (st === "active" ? "active" : "closed"), p.status || "unknown"));
+  if (p.orchestrator) head.append(el("span", "badge plain", "orch · " + p.orchestrator));
+  card.append(head);
+  if (p.error) { card.append(el("p", "tk", p.error)); return card; }
+  if (p.goal) card.append(el("p", "goal", p.goal));
+  card.append(el("p", "plan-meta", "generated " + (p.generated_at || "?") + " UTC"));
 
   const board = el("div", "board");
   const cols = new Map(), boxes = new Map();
   for (const s of p.sessions || []) {
     const d = depth(s, p.sessions, new Set());
-    if (!cols.has(d)) cols.set(d, el("div", "col"));
-    const box = el("div", "sess " + (s.state || "unknown"));
-    box.append(el("div", "st", s.state || "unknown"));
-    box.append(el("div", "nm", s.name));
-    if (s.task) box.append(el("div", "tk", s.task));
-    const bits = [];
-    if (s.repo_branch) bits.push(s.repo_branch);
-    if (s.note_age_min != null) bits.push(`note ${s.note_age_min}m ago`);
-    if (s.ledger_state) bits.push(`ledger:${s.ledger_state}`);
-    if (s.container) bits.push(s.container.startsWith("Up") ? "container up" : s.container);
-    else if (!s.planned) bits.push("no container");
-    for (const u of s.unblocks || [])
-      bits.push(`⬆ ${u.name} [${u.type}]` + (u.verified === true ? " ✓" : u.verified === false ? " ✗" : ""));
-    if (bits.length) box.append(el("div", "meta", bits.join(" · ")));
+    if (!cols.has(d)) {
+      const c = el("div", "col");
+      c.append(el("span", "col-k", d === 0 ? "wave · independent" : "after wave " + d));
+      cols.set(d, c);
+    }
+    const box = sessionCard(s);
     cols.get(d).append(box);
     boxes.set(s.name, { box, sess: s });
   }
@@ -107,59 +348,148 @@ function renderPlan(p) {
   board.append(svg);
   card.append(board);
 
-  if ((p.contradictions || []).length) {
+  const contras = (p.contradictions || []), perrs = (p.parser_errors || []);
+  if (contras.length || perrs.length) {
     const c = el("div", "contras");
-    c.append(el("div", null, "⚠ contradictions:"));
-    for (const x of p.contradictions) c.append(el("div", null, `${x.session}: ${x.kind} — ${x.detail}`));
+    c.append(el("div", "kicker", "Needs attention"));
+    for (const x of contras) {
+      const row = el("div", "row");
+      row.append(el("b", null, x.kind), el("span", null, `${x.session} — ${x.detail}`));
+      c.append(row);
+    }
+    for (const x of perrs) {
+      const row = el("div", "row perr");
+      row.append(el("b", null, "protocol"), el("span", null, x));
+      c.append(row);
+    }
     card.append(c);
   }
-  if ((p.parser_errors || []).length) {
-    const c = el("div", "contras perr");
-    for (const x of p.parser_errors) c.append(el("div", null, "parser: " + x));
-    card.append(c);
+
+  if ((p.assignments || []).length) {
+    const det = el("details", "assign");
+    det.append(el("summary", null, `Assignments · ${p.assignments.length}`));
+    const wrapT = el("div", "tablewrap"), tbl = el("table");
+    const thead = el("thead"), hr = el("tr");
+    hr.append(el("th", null, "Area / surface"), el("th", null, "Owner"));
+    thead.append(hr); tbl.append(thead);
+    const tb = el("tbody");
+    for (const a of p.assignments) {
+      const tr = el("tr");
+      tr.append(el("td", null, a.area), el("td", "own", a.owner));
+      tb.append(tr);
+    }
+    tbl.append(tb); wrapT.append(tbl); det.append(wrapT); card.append(det);
   }
+
   requestAnimationFrame(() => {
     const br = board.getBoundingClientRect();
-    svg.setAttribute("width", board.scrollWidth); svg.setAttribute("height", board.scrollHeight);
+    svg.setAttribute("width", board.scrollWidth);
+    svg.setAttribute("height", board.scrollHeight);
+    const defs = document.createElementNS(svg.namespaceURI, "defs");
+    defs.innerHTML = '<marker id="arr-' + p.plan + '" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>';
+    svg.append(defs);
+    svg.style.color = getComputedStyle(document.documentElement).getPropertyValue("--accent-edge").trim() || "currentColor";
     for (const { box, sess } of boxes.values()) {
       const deps = depTokens(sess);
       if (!deps.length) continue;
       for (const [oname, o] of boxes) {
         if (oname === sess.name || !deps.includes(oname)) continue;
         const a = o.box.getBoundingClientRect(), b = box.getBoundingClientRect();
-        const line = document.createElementNS(svg.namespaceURI, "line");
-        line.setAttribute("x1", a.right - br.left + board.scrollLeft);
-        line.setAttribute("y1", a.top + a.height / 2 - br.top);
-        line.setAttribute("x2", b.left - br.left + board.scrollLeft - 6);
-        line.setAttribute("y2", b.top + b.height / 2 - br.top);
-        line.setAttribute("stroke", "currentColor"); line.setAttribute("stroke-opacity", "0.45");
-        line.setAttribute("marker-end", "url(#arr)");
-        svg.append(line);
+        const x1 = a.right - br.left + board.scrollLeft, y1 = a.top + a.height / 2 - br.top;
+        const x2 = b.left - br.left + board.scrollLeft - 7, y2 = b.top + b.height / 2 - br.top;
+        const mx = (x1 + x2) / 2;
+        const path = document.createElementNS(svg.namespaceURI, "path");
+        path.setAttribute("d", `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", "currentColor");
+        path.setAttribute("stroke-width", "1.6");
+        path.setAttribute("marker-end", `url(#arr-${p.plan})`);
+        svg.append(path);
       }
     }
-    const defs = document.createElementNS(svg.namespaceURI, "defs");
-    defs.innerHTML = '<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor" fill-opacity="0.6"/></marker>';
-    svg.prepend(defs);
   });
   return card;
 }
 
+function kpiTile(n, label, tone) {
+  const t = el("div", "kpi");
+  if (tone) t.dataset.tone = tone;
+  t.append(el("div", "n", String(n)), el("div", "k", label));
+  return t;
+}
+
+function headline(plans, counts) {
+  const h = document.getElementById("headline");
+  h.replaceChildren();
+  if (!plans.length) { h.append("Nothing ", Object.assign(el("em"), { textContent: "in flight." })); return; }
+  const n = plans.length === 1 ? "One plan" : plans.length === 2 ? "Two plans" :
+            plans.length === 3 ? "Three plans" : `${plans.length} plans`;
+  h.append(n + " ", Object.assign(el("em"), { textContent: "in flight." }));
+  if (counts.blocked > 0 || counts.attention > 0) {
+    h.replaceChildren(n + " in flight — ", Object.assign(el("em"), {
+      textContent: counts.blocked ? "one needs you." : "worth a look.",
+    }));
+  }
+}
+
+let timer = 30, ticking = null;
 async function refresh() {
-  const root = document.getElementById("root"), stamp = document.getElementById("stamp");
+  const chip = document.getElementById("refresh-chip");
   try {
     const r = await fetch("/api/plans");
     if (!r.ok) throw new Error("HTTP " + r.status);
     const plans = await r.json();
+    const counts = { working: 0, done: 0, blocked: 0, waiting: 0, attention: 0 };
+    for (const p of plans) {
+      counts.attention += (p.contradictions || []).length + (p.parser_errors || []).length;
+      for (const s of p.sessions || []) {
+        if (s.state === "working") counts.working++;
+        else if (s.state === "done") counts.done++;
+        else if (s.state === "blocked") counts.blocked++;
+        else if (s.state === "waiting-to-spawn") counts.waiting++;
+      }
+    }
+    headline(plans, counts);
+    const kpis = document.getElementById("kpis");
+    kpis.hidden = !plans.length;
+    kpis.replaceChildren(
+      kpiTile(plans.length, "plans", null),
+      kpiTile(counts.working, "working", "accent"),
+      kpiTile(counts.done, "done", "ok"),
+      kpiTile(counts.blocked, "blocked", counts.blocked ? "danger" : null),
+      kpiTile(counts.waiting, "waiting to spawn", null),
+      kpiTile(counts.attention, "need attention", counts.attention ? "danger" : "ok"),
+    );
+    const root = document.getElementById("root");
     root.replaceChildren();
-    if (!plans.length) root.append(el("div", "empty", "No active plans in /opt/cc-notes."));
+    if (!plans.length) {
+      const e = el("div", "empty");
+      e.append(el("p", "verdict-line", "Nothing in flight."));
+      const a = el("a", "arrow", "Design a plan in a client repo →");
+      a.href = "/";
+      e.append(a);
+      root.append(e);
+    }
     for (const p of plans) root.append(renderPlan(p));
-    stamp.textContent = "updated " + new Date().toLocaleTimeString();
-  } catch (e) {
-    stamp.textContent = "fetch failed: " + e.message;
+    chip.dataset.err = "0";
+    timer = 30;
+  } catch (err) {
+    chip.dataset.err = "1";
+    chip.textContent = "offline · retrying";
+    timer = 15;
   }
 }
+function tick() {
+  const chip = document.getElementById("refresh-chip");
+  timer -= 1;
+  if (chip.dataset.err !== "1")
+    chip.textContent = `updated ${new Date().toLocaleTimeString()} · ${timer}s`;
+  if (timer <= 0) { refresh(); }
+}
+document.getElementById("refresh-chip").addEventListener("click", refresh);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
-setInterval(refresh, 30000);
+ticking = setInterval(tick, 1000);
 </script>
 </body>
 </html>
