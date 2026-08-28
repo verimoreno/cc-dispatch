@@ -157,6 +157,12 @@ the plan does not tear anything down.
   manually.
 - **Notes are claims, not facts.** Gate spawns on verified deliverables (step 4.1),
   not on `STATUS: done` alone.
+- **Workers never merge — merging is Veri's decision.** A worker ends at PR +
+  merge-safety review + `STATUS: done` with `pr` evidence. Veri approves via the
+  Plan Board / PR page; on approval, Veri (or the orchestrator, told explicitly)
+  merges. Change requests go back via `cc-launch <session> --prompt "..."` into
+  the still-resident session — it treats feedback as a return to its review/fix
+  loop. Only after merge does the reap + dependency release happen.
 - **Laptop orchestrators are plan members too** — a laptop session doing plan
   work writes its own `notes/<name>.md` over SSH (`ssh cc-host 'cat >> ...'`),
   same format, pick a stable name like `laptop-<topic>`.

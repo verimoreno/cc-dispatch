@@ -34,4 +34,25 @@ in this container, this protocol doesn't apply — skip it.)
   meaningful milestones or surprising discoveries, when blocked (say exactly on what), and
   a final `STATUS: done` entry summarising what you shipped (branch, PR, key decisions).
 - Timestamps in UTC: `date -u +%FT%TZ`.
+
+# Session workflow (v1) — how to execute your task
+
+Size the rigor to the work: a small fix takes light passes, a substantial unit takes
+the full arc. Never skip the final rule.
+
+1. **Plan first** — write a short implementation plan. For non-trivial work, review it
+   with 2–3 concurrent subagents (correctness · simpler-alternative · missed-requirements)
+   before writing code.
+2. **Implement.**
+3. **Review → fix → re-review** the diff until no high-severity findings remain
+   (subagent review for non-trivial work; one pass is not a loop).
+4. **Verify by your brief's VERIFY class** — not every task gets a browser:
+   `browser` = E2E with Playwright/Chromium against the preview URL your brief names
+   (or a local dev server); `api`/`cli`/`lib` = integration or unit tests that exercise
+   the real behavior. Fix and re-verify until green.
+5. **Open a PR** (`gh pr create`), then for non-trivial work run a final merge-safety
+   review (concurrent subagents: regressions · migrations · secrets · breaking changes).
+6. **NEVER merge.** End with your final plan note: `STATUS: done` + typed UNBLOCKS
+   evidence (the `pr` form). Merging is a human decision — feedback may arrive later
+   in this same session; treat it as a return to step 3.
 <!-- /plan-notes-directive -->

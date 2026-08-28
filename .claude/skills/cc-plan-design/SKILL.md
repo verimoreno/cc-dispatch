@@ -86,6 +86,11 @@ file, an interface) or admit the units aren't really separable.
   Name them `<plan-slug>/<unit>`; keep `len(repo)+1+len(branch)` ≤ 63.
 - **Memory class per unit**: browser/e2e/build-heavy → note `CC_MEM_LIMIT=6g`
   in its brief line; default 4g otherwise.
+- **Verification class per unit** — decided HERE, not improvised by the worker:
+  `browser` (has a UI — E2E via Playwright/Chromium; name where the preview URL
+  comes from, e.g. the Vercel bot comment on the PR, or a local dev command),
+  `api` (integration tests against real endpoints), `cli` (run the real commands),
+  or `lib` (unit tests). Browser units also get the 6g memory class.
 - **Declare the integration strategy in PLAN.md**: client repos = PR + CI per
   session, orchestrator merges after `cc-plan verify` + green checks; the
   snake-demo push-to-main shortcut is for demos only. State who merges, in
@@ -111,8 +116,12 @@ TASK: <what to build, concretely — outcomes, not vibes>
 YOUR SURFACES: <files/dirs it owns, from Assignments>
 DO NOT TOUCH: <other sessions' surfaces that border yours>
 STARTS FROM: <verified artifact identity, for dependent waves — repo+sha+path>
+VERIFY: <browser (preview URL from: <where>) | api | cli | lib>
+FLOW: follow the fleet Session workflow in your CLAUDE.md — plan → sized subagent
+review of the plan → implement → review/fix loop → VERIFY-class testing loop →
+PR → merge-safety review → STATUS: done + evidence. You NEVER merge.
 DELIVER: branch <branch>, PR against <target>, and your final note:
-STATUS: done + UNBLOCKS: <artifact> commit repo=<o/r> sha=<sha> path=<path>
+STATUS: done + UNBLOCKS: <artifact> pr repo=<o/r> number=<N> head=<sha>
 ```
 
 ## 6. Grill the plan before spawning anything
