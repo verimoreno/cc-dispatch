@@ -92,6 +92,29 @@ class ParseNotes(unittest.TestCase):
             self.assertTrue(any("before first entry" in e for e in errors))
 
 
+class RegisterRow(unittest.TestCase):
+    PLAN = ("STATUS: active\n## Roster\n"
+            "| session | repo/branch | task | depends on |\n|---|---|---|---|\n"
+            "| s1 | r/b1 | build | — |\n"
+            "| PLANNED | r/b2 | api work | s1 |\n\n## Log\n- created\n")
+
+    def test_replaces_planned_row(self):
+        new, action = ccplan.register_row(self.PLAN, "real-sess", "r/b2")
+        self.assertIn("replaced", action)
+        self.assertIn("| real-sess | r/b2 | api work | s1 |", new)
+        self.assertNotIn("PLANNED", new)
+
+    def test_appends_when_no_planned_match(self):
+        new, action = ccplan.register_row(self.PLAN, "extra", "r/b3", task="t3", depends="s1")
+        self.assertIn("appended", action)
+        self.assertIn("| extra | r/b3 | t3 | s1 |", new)
+        self.assertIn("| PLANNED | r/b2 |", new)  # untouched
+
+    def test_no_roster_raises(self):
+        with self.assertRaises(ValueError):
+            ccplan.register_row("STATUS: active\nno tables here\n", "s", "r/b")
+
+
 class EpochUTC(unittest.TestCase):
     def test_epoch_is_utc_regression(self):
         # 2026-08-27 bug: mktime applied the local DST offset -> ages 60min high under CEST

@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+DETACH=0
+if [[ "${1:-}" == "--detach" ]]; then DETACH=1; shift; fi
+
 REPO_INPUT="${1:-}"
 BRANCH="${2:-}"
 MODEL_ARG="${3:-}"   # optional: shorthand (m3, kimi3, ...) or full openrouter slug
@@ -248,6 +251,10 @@ for s in json.load(sys.stdin):
   if [[ -n "$ATTEMPT_ID" ]]; then
     cc-ledger set "$ATTEMPT_ID" running ${tmux_name:+--tmux "$tmux_name"} >/dev/null || true
     trap - EXIT
+  fi
+  if [[ "$DETACH" == "1" ]]; then
+    echo "[5/5] Detached — session $SESSION_NAME ready"
+    exit 0
   fi
   exec agent-deck session attach "$AGENTDECK_ID"
 fi

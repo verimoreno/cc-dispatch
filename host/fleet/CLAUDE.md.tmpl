@@ -11,7 +11,9 @@ in this container, this protocol doesn't apply — skip it.)
 - **Write your notes** to `/opt/cc-notes/<plan>/notes/<your-session-name>.md` (your session
   name is your container hostname — `hostname` prints it). Create the file if missing.
   **Append-only, and only to your own file** — never edit PLAN.md or another session's notes.
-- **Entry format** (machine-parsed — keep it exact):
+- **Entry format** (machine-parsed — keep it exact). The `## <timestamp>` heading is
+  the FIRST line of the file and of every entry — write NOTHING above it or between
+  entries outside this format (preamble above the first heading is a protocol error):
 
       ## 2026-08-27T14:03:00Z
       STATUS: working|done|blocked

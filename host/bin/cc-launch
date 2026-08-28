@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# cc-launch — launch an agent in a spawned session's pane and inject its first
+# prompt, entirely host-side. Pairs with `cc-spawn --detach`:
+#
+#   cc-spawn --detach git@github.com:owner/repo.git branch
+#   cc-launch <session-name> --agent ccd --prompt-file task.md      # or --prompt "..."
+#   cc-launch <session-name> --agent ccd --prompt-file - < task.md  # stdin
+#
+# Handles the per-agent quirks that used to be manual choreography: the REPL
+# readiness footer gate, codex's update dialog, and the paste-detection
+# second-Enter. --agent none injects into the bare container shell (tests).
+set -euo pipefail
+
+SESSION="${1:?usage: cc-launch <session-name> [--agent ccd|cxd|ocd|none] [--prompt-file F|--prompt TEXT] [--timeout SECS]}"
+shift
+AGENT=ccd; PROMPT=""; PROMPT_FILE=""; TIMEOUT=180
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --agent) AGENT="$2"; shift 2 ;;
+    --prompt) PROMPT="$2"; shift 2 ;;
+    --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    *) echo "ERROR: unknown arg $1" >&2; exit 1 ;;
+  esac
+done
+case "$AGENT" in ccd|cxd|ocd|none) ;; *) echo "ERROR: --agent must be ccd|cxd|ocd|none" >&2; exit 1 ;; esac
+
+TS=$(agent-deck ls --json 2>/dev/null | python3 -c "
+import json, sys
+for s in json.load(sys.stdin):
+    if s.get('title') == '$SESSION':
+        print(s.get('tmux_session', '')); break
+" 2>/dev/null || true)
+[[ -n "$TS" ]] || TS="$SESSION"   # fallback tmux naming
+tmux has-session -t "$TS" 2>/dev/null || { echo "ERROR: no tmux session for '$SESSION' (looked for '$TS')" >&2; exit 1; }
+
+pane(){ tmux capture-pane -p -t "$TS"; }
+
+ready(){  # agent-specific persistent-footer markers (never the welcome banner)
+  case "$AGENT" in
+    ccd) pane | grep -q "? for shortcuts\|shift+tab to cycle\|bypass permissions" ;;
+    cxd) pane | grep -q "context left\|/model to change\|⏎ send\|esc to interrupt" ;;
+    ocd) pane | grep -q "Ask anything\|tab agents\|MCP" ;;
+    none) return 0 ;;
+  esac
+}
+
+# 1. Launch the agent (skip if its TUI is already up — reattach case)
+if [[ "$AGENT" != "none" ]] && ! ready; then
+  tmux send-keys -t "$TS" -l "$AGENT"; tmux send-keys -t "$TS" Enter
+fi
+
+# 2. Readiness gate
+if [[ "$AGENT" != "none" ]]; then
+  DEADLINE=$((SECONDS + TIMEOUT)); RESENT=0
+  until ready; do
+    if [[ $SECONDS -gt $DEADLINE ]]; then
+      echo "ERROR: '$AGENT' not ready in ${TIMEOUT}s — pane tail:" >&2
+      pane | grep -v '^$' | tail -5 >&2; exit 1
+    fi
+    # codex update dialog: skip without upgrading mid-task
+    if [[ "$AGENT" == "cxd" ]] && pane | grep -q "Update available"; then
+      tmux send-keys -t "$TS" -l 2; sleep 1; tmux send-keys -t "$TS" Enter
+    fi
+    # keystroke raced the shell coming up: no TUI signs after ~45s -> resend once
+    if [[ $RESENT == 0 && $SECONDS -gt $((DEADLINE - TIMEOUT + 45)) ]] \
+       && ! pane | grep -q "╭\|╰\|>_\|Claude\|Codex\|OpenCode"; then
+      tmux send-keys -t "$TS" -l "$AGENT"; tmux send-keys -t "$TS" Enter; RESENT=1
+    fi
+    sleep 5
+  done
+  echo "→ $AGENT ready in $SESSION"
+fi
+
+# 3. Inject the prompt
+[[ -n "$PROMPT_FILE" || -n "$PROMPT" ]] || { echo "→ no prompt given — launch only"; exit 0; }
+if [[ -n "$PROMPT_FILE" ]]; then
+  if [[ "$PROMPT_FILE" == "-" ]]; then tmux load-buffer -b cclaunch -
+  else tmux load-buffer -b cclaunch "$PROMPT_FILE"; fi
+else
+  printf '%s' "$PROMPT" | tmux load-buffer -b cclaunch -
+fi
+tmux paste-buffer -d -b cclaunch -t "$TS"
+sleep 1
+tmux send-keys -t "$TS" Enter
+# paste-detection quirks: claude swallows the in-burst Enter; codex sometimes
+# leaves the whole paste sitting in the input box. Re-Enter until it clears.
+for _ in 1 2 3; do
+  sleep 3
+  pane | grep -q '^› \[Pasted\|^❯ .\+\[Pasted' || break
+  tmux send-keys -t "$TS" Enter
+done
+if [[ "$AGENT" == "ccd" ]]; then sleep 1; tmux send-keys -t "$TS" Enter; fi
+
+sleep 3
+if pane | grep -q '\[Pasted'; then
+  echo "WARN: paste may still be unsubmitted — check the pane" >&2; exit 2
+fi
+echo "→ prompt submitted to $SESSION ($TS)"
