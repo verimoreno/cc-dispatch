@@ -74,9 +74,10 @@ ssh cc-host 'cc-spawn --detach git@github.com:OWNER/NAME.git BRANCH'
 container, agent-deck registration, ledger `running` — then **exits instead of
 attaching**. No tmux holding-window, no scratch-window reaping, no registration
 polling: when the command returns 0, the session exists; its output names the
-session and tmux target. Prefix `CC_MEM_LIMIT=6g` for browser/build-heavy
-tasks, `CC_TOKENS=...` for deploy tokens, `CC_SCOPED_TOKEN=1` for a repo-scoped
-GitHub token (see the Inputs above).
+session and tmux target. Env knobs go INSIDE the ssh quotes so they reach cc-spawn, e.g.
+`ssh cc-host 'CC_MEM_LIMIT=6g CC_TOKENS=vercel cc-spawn --detach NAME BRANCH'` —
+a prefix outside the quotes only sets them on the laptop. `CC_SCOPED_TOKEN=1`
+for a repo-scoped GitHub token (see the Inputs above).
 
 ### 3. Launch the agent + inject the prompt — one command
 
@@ -130,14 +131,11 @@ the same shape with three differences:
    The registered `title` is `NAME-BRANCH-code` (or `-arch`); match on that in steps 1 & 3.
    Use a DIFFERENT branch for an arch vs a code session (git won't co-check-out one branch twice).
 
-2. **No `ccd` step.** cc-arch/cc-code **auto-launch OpenCode** (via `ocd`) on first spawn — skip
-   step 4 entirely. The **readiness marker** (step 5) is the OpenCode TUI, not the Claude footer:
-   gate on any of `Ask anything…` · `tab agents  ctrl+p commands` · the `⊙ N MCP` status line.
-   (Reattaching a running session does NOT relaunch, so never re-send a launcher into it.)
-
-3. **Inject** (step 6) is simpler: `send-keys -l "PROMPT"` + a **single** `Enter` submits it —
-   OpenCode has **no** paste-detection quirk, so the delayed second Enter isn't needed (harmless
-   if sent). Multi-line still via `load-buffer` / `paste-buffer` + one Enter.
+2. **No manual `ccd` analog.** cc-arch/cc-code **auto-launch OpenCode** (via `ocd`) on first
+   spawn. Inject with `cc-launch SESSION --agent ocd --prompt-file -` — it knows the OpenCode
+   readiness markers (`Ask anything…` · `tab agents` · the `⊙ N MCP` line), won't re-type the
+   launcher into a booting TUI, and OpenCode needs only a single Enter (no paste quirk).
+   Reattaching a running session never relaunches.
 
 **Teardown** uses the 3-arg cleanup: `cc-cleanup-worktree <repo> <branch> <arch|code>` (then
 `cc-stop <session-name>` first, as usual). OpenCode sessions bill the OpenCode Go subscription by

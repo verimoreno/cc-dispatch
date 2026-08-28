@@ -17,10 +17,10 @@ BARE_DIR="$REPO_DIR/.bare"
 
 if [[ -n "$SUFFIX" ]]; then
   WORKTREE_DIR="$REPO_DIR/wt-${BRANCH}-${SUFFIX}"
-  SESSION_NAME=$(echo "${REPO}-${BRANCH}-${SUFFIX}" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_')
+  SESSION_NAME=$(echo "${REPO}-${BRANCH}-${SUFFIX}" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_' | tr 'A-Z' 'a-z')
 else
   WORKTREE_DIR="$REPO_DIR/wt-$BRANCH"
-  SESSION_NAME=$(echo "${REPO}-${BRANCH}" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_')
+  SESSION_NAME=$(echo "${REPO}-${BRANCH}" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_' | tr 'A-Z' 'a-z')
 fi
 if docker ps --format '{{.Names}}' | grep -qx "$SESSION_NAME"; then
   echo "ERROR: container '$SESSION_NAME' is still running. Stop it first:"
@@ -47,8 +47,8 @@ if [[ -n "$AGENTDECK_ID" ]]; then
   agent-deck rm "$AGENTDECK_ID" 2>&1 | grep -v '^$' || echo "  WARN: agent-deck rm failed"
 fi
 
-# Best-effort ledger transition to done (session name is lowercased in the ledger)
-cc-ledger set-by-session "$(echo "$SESSION_NAME" | tr 'A-Z' 'a-z')" done >/dev/null 2>&1 || true
+# Best-effort ledger transition to done (SESSION_NAME is lowercased above, matching cc-spawn)
+cc-ledger set-by-session "$SESSION_NAME" done >/dev/null 2>&1 || true
 
 if [[ ! -d "$BARE_DIR" ]]; then
   echo "ERROR: no bare repo at $BARE_DIR"

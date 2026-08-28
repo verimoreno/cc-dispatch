@@ -55,15 +55,20 @@ const el = (tag, cls, text) => {
   return e;
 };
 
+// depends_on is matched by exact name tokens, never substrings — "api" must not
+// draw an edge to "api-v2" just because one name contains the other.
+function depTokens(sess) {
+  return (sess.depends_on || "").split(/[^A-Za-z0-9._-]+/).filter(Boolean);
+}
 function depth(sess, all, seen) {
   if (seen.has(sess.name)) return 0;              // cycle guard
   seen.add(sess.name);
-  const dep = (sess.depends_on || "").trim();
-  if (!dep || dep === "—" || dep === "-") return 0;
+  const deps = depTokens(sess);
+  if (!deps.length) return 0;
   let d = 0;
   for (const other of all)
-    if (other.name !== sess.name && other.name && dep.includes(other.name))
-      d = Math.max(d, 1 + depth(other, all, seen));
+    if (other.name !== sess.name && deps.includes(other.name))
+      d = Math.max(d, 1 + depth(other, all, new Set(seen))); // fresh set per branch: siblings must not mask depth
   return d;
 }
 
@@ -117,10 +122,10 @@ function renderPlan(p) {
     const br = board.getBoundingClientRect();
     svg.setAttribute("width", board.scrollWidth); svg.setAttribute("height", board.scrollHeight);
     for (const { box, sess } of boxes.values()) {
-      const dep = (sess.depends_on || "").trim();
-      if (!dep) continue;
+      const deps = depTokens(sess);
+      if (!deps.length) continue;
       for (const [oname, o] of boxes) {
-        if (oname === sess.name || !dep.includes(oname)) continue;
+        if (oname === sess.name || !deps.includes(oname)) continue;
         const a = o.box.getBoundingClientRect(), b = box.getBoundingClientRect();
         const line = document.createElementNS(svg.namespaceURI, "line");
         line.setAttribute("x1", a.right - br.left + board.scrollLeft);

@@ -31,7 +31,7 @@ for s in json.load(sys.stdin):
     if s.get('title') == '$SESSION':
         print(s.get('tmux_session', '')); break
 " 2>/dev/null || true)
-[[ -n "$TS" ]] || TS="$SESSION"   # fallback tmux naming
+[[ -n "$TS" ]] || TS="=$SESSION"   # fallback naming; '=' forces exact match, no prefix surprises
 tmux has-session -t "$TS" 2>/dev/null || { echo "ERROR: no tmux session for '$SESSION' (looked for '$TS')" >&2; exit 1; }
 
 pane(){ tmux capture-pane -p -t "$TS"; }
@@ -45,8 +45,11 @@ ready(){  # agent-specific persistent-footer markers (never the welcome banner)
   esac
 }
 
-# 1. Launch the agent (skip if its TUI is already up — reattach case)
-if [[ "$AGENT" != "none" ]] && ! ready; then
+# 1. Launch the agent — but never type into a TUI that is already up OR booting
+# (cc-arch/cc-code auto-launch ocd on spawn: typing 'ocd' again would land inside
+# the starting TUI as stray input). Boot evidence = banner/box art in the pane.
+if [[ "$AGENT" != "none" ]] && ! ready \
+   && ! pane | grep -q "╭\|╰\|>_\|Launching OpenCode\|OpenAI Codex\|Claude Code"; then
   tmux send-keys -t "$TS" -l "$AGENT"; tmux send-keys -t "$TS" Enter
 fi
 
@@ -93,7 +96,9 @@ done
 if [[ "$AGENT" == "ccd" ]]; then sleep 1; tmux send-keys -t "$TS" Enter; fi
 
 sleep 3
-if pane | grep -q '\[Pasted'; then
+# only the INPUT line matters: a submitted prompt echoes "[Pasted text #N]" in
+# the transcript, which must not read as "stuck"
+if pane | grep -q '^› \[Pasted\|^❯ .\+\[Pasted'; then
   echo "WARN: paste may still be unsubmitted — check the pane" >&2; exit 2
 fi
 echo "→ prompt submitted to $SESSION ($TS)"

@@ -85,6 +85,16 @@ class ParseNotes(unittest.TestCase):
             self.assertEqual(entries[0]["unblocks"], [])
             self.assertTrue(any("unsafe path" in e for e in errors))
 
+    def test_malformed_status_is_error_not_silence(self):
+        # QA finding: "STATUS: done (all tests green)" silently parsed as no status
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            errors = []
+            entries = ccplan.parse_notes(self.write(tmp,
+                "## 2026-08-27T10:00:00Z\nSTATUS: done (all tests green)\n"), errors)
+            self.assertIsNone(entries[0]["status"])
+            self.assertTrue(any("malformed STATUS" in e for e in errors))
+
     def test_content_before_heading_is_flagged(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,6 +120,12 @@ class RegisterRow(unittest.TestCase):
         self.assertIn("appended", action)
         self.assertIn("| extra | r/b3 | t3 | s1 |", new)
         self.assertIn("| PLANNED | r/b2 |", new)  # untouched
+
+    def test_append_without_trailing_newline(self):
+        # QA finding: appending after a final roster row with no trailing \n merged rows
+        new, action = ccplan.register_row(self.PLAN.rstrip("\n"), "tail-sess", "r/b9")
+        self.assertIn("appended", action)
+        self.assertIn("\n| tail-sess | r/b9 |", new)
 
     def test_no_roster_raises(self):
         with self.assertRaises(ValueError):

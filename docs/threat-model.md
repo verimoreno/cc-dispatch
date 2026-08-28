@@ -98,7 +98,9 @@ PSI-based rejection remains future work.
 - **SSH key**: remove from GitHub → generate new pair in `~/.ssh` on cc-host →
   add public key to GitHub. Containers see the new key immediately (live mount).
 - **Deploy tokens** (Vercel/Railway/Supabase): revoke in each provider's
-  dashboard; update `.env`. Only sessions spawned with `CC_TOKENS=` ever had them.
+  dashboard; update `.env`. Post-hardening sessions have them only when spawned
+  with `CC_TOKENS=`; **containers spawned before 2026-08-27 carry all of them**
+  until reaped — revocation at the provider is the only cutoff that reaches those.
 - **A suspect tailnet device**: Tailscale admin → remove device. The dispatch
   UI and SSH both ride on tailnet membership.
 - **A suspect session**: `cc-stop <name>` (container gone = env gone), then
