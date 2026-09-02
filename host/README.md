@@ -210,7 +210,10 @@ Two things a fresh session does **not** get, by design:
   singleton**. Whichever session starts the proxy owns the port, and every other
   session silently borrows it — and loses the database when that session is reaped.
   Use a spare port (`--port 5442`) when you only need to prove your own credentials.
-  A host-level proxy service is the standing fix; it is not yet built.
+  A host-level proxy service is the standing fix; it is not yet built, and the
+  reasoning behind that deferral — including why a host unit on TCP would be a
+  reliability fix and not a security one — is in
+  [`../docs/db-plane-ownership.md`](../docs/db-plane-ownership.md).
 
 ### If a spawn breaks after a deploy
 
