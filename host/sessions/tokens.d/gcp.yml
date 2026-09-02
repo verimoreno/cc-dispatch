@@ -1,0 +1,49 @@
+# tokens.d/gcp.yml — CC_TOKENS=gcp: GCP / Identity Platform staging credentials.
+#
+# Opt-in only: cc-spawn adds this overlay when CC_TOKENS=gcp names it. Values are
+# interpolated from /opt/cc-sessions/.env (unmanaged, mode 0600). Key NAMES live in
+# ../env.template; the runbook is host/README.md § "CC_TOKENS=gcp".
+#
+# The service-account key travels as CONTENT (GOOGLE_APPLICATION_CREDENTIALS_JSON)
+# and this overlay's entrypoint materializes it to a 0600 file at the path
+# GOOGLE_APPLICATION_CREDENTIALS names, because the google libraries want a file
+# while a .env can only carry a string. A read-only bind-mount of a host key dir was
+# the alternative and was rejected: a mount is declared in the compose project and
+# would be one copy-paste away from every session, token class or not, while this
+# path only ever materializes for a session that asked for CC_TOKENS=gcp.
+#
+# GIP_ADMIN_ACCESS_TOKEN is deliberately absent. It is a ~1h OAuth access token, so a
+# static .env entry ships a secret that is expired before it is ever read. A session
+# that needs persona seeding mints its own from the SA key — recipe in host/README.md.
+services:
+  cc-session:
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS_JSON=${GOOGLE_APPLICATION_CREDENTIALS_JSON:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=/home/pwuser/.gcp/sa.json
+      - GCP_PROJECT=${GCP_PROJECT:-}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - GIP_API_KEY=${GIP_API_KEY:-}
+      - CLOUD_SQL_INSTANCE=${CLOUD_SQL_INSTANCE:-}
+      - DATABASE_URL_SESSION=${DATABASE_URL_SESSION:-}
+      - DATABASE_URL_TX_POOLER=${DATABASE_URL_TX_POOLER:-}
+      - SEED_TENANT_DB_USER=${SEED_TENANT_DB_USER:-}
+      - SEED_TENANT_DB_TOKEN=${SEED_TENANT_DB_TOKEN:-}
+
+    # Materialize the key before the shell starts. Overriding `entrypoint` clears the
+    # image CMD, hence the explicit `exec /bin/bash`. `$$` escapes compose
+    # interpolation — those are runtime shell expansions, not .env lookups.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        if [ -n "$${GOOGLE_APPLICATION_CREDENTIALS_JSON:-}" ]; then
+          if ( umask 077
+               mkdir -p "$$(dirname "$$GOOGLE_APPLICATION_CREDENTIALS")"
+               printf '%s' "$$GOOGLE_APPLICATION_CREDENTIALS_JSON" \
+                 > "$$GOOGLE_APPLICATION_CREDENTIALS" ); then
+            chmod 600 "$$GOOGLE_APPLICATION_CREDENTIALS"
+          else
+            echo "cc-session: FAILED to write $$GOOGLE_APPLICATION_CREDENTIALS" >&2
+          fi
+        fi
+        exec /bin/bash

@@ -111,7 +111,7 @@ validate(){
     || die "docker compose config failed"
   grep -q 'com.fractional.cc-fleet' <<<"$cfg" || die "rendered compose lacks fleet label"
   grep -q 'mem_limit: "4294967296"' <<<"$cfg" || die "rendered compose default mem_limit is not 4g"
-  if grep -qE 'VERCEL|RAILWAY|SUPABASE' <<<"$cfg"; then die "deploy tokens leaked into default compose"; fi
+  if grep -qE 'VERCEL|RAILWAY|SUPABASE|GIP_|GCP_PROJECT|GOOGLE_CLOUD_PROJECT|GOOGLE_APPLICATION_CREDENTIALS|CLOUD_SQL|SEED_TENANT' <<<"$cfg"; then die "deploy tokens leaked into default compose"; fi
   [[ -n "$(live_claude)" ]] || die "cannot read fleet CLAUDE.md (docker/volume problem)"
   note "validation ok"
 }
