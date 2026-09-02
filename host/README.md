@@ -181,11 +181,24 @@ Then tear the session down (`cc-stop`, `cc-cleanup-worktree`, `cc-ledger
 set-by-session <name> done`). `cc-cleanup-worktree` refuses while Next's generated
 `next-env.d.ts`/`.gitignore` edits are uncommitted; discard them first.
 
-**Known-bad value:** `DATABASE_URL_SESSION` (the password plane, `postgres`
+**`DATABASE_URL_SESSION` is empty on purpose.** The password plane (`postgres`
 superuser) was rejected with `password authentication failed` on 2026-09-02, tested
-both as a URI and with discrete parameters. The IAM plane
-(`DATABASE_URL_TX_POOLER`) works. That password needs rotating independently of the
-SA key — and it is stored in plaintext in a DSN, on a port every container can reach.
+both as a URI and with discrete parameters, so it was blanked in `.env` with the
+reason left in-file. A wrong credential fails late and reads like a proxy fault; an
+absent one fails early and says so. Refill it only with a rotated password — and it
+needs rotating on its own track regardless, since it is a plaintext password in a
+DSN on a port every container on the box can reach.
+
+**You may not need a listener at all.** Lane u0 shipped its work using the Cloud SQL
+connector directly — `DB_IAM_AUTH=1` plus `CLOUD_SQL_INSTANCE`, no proxy, no local
+port (D-017). The connector is gated on that explicit flag, which this token class
+does *not* set (`packages/db/src/cloud-sql.ts` is emphatic that the mode is never
+inferred), so a session wanting that path exports it itself. Where it works it is
+strictly better than a shared listener: nothing to squat a port, nothing to inherit
+from another lane, nothing to die when that lane is reaped. What still needs a
+listener: `psql` at a human prompt, and `infra/scripts/agri_demo_shared.ts`, which
+builds its tenant client from discrete host/port fields and never spreads the
+connector options.
 
 Two things a fresh session does **not** get, by design:
 
