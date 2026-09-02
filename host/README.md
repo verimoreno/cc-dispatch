@@ -56,11 +56,11 @@ and a session spawned without it sees none of these variables.
 | `DATABASE_URL_TX_POOLER` | IAM plane, `127.0.0.1:5432` (proxy, `--auto-iam-authn`) |
 | `SEED_TENANT_DB_USER`, `SEED_TENANT_DB_TOKEN` | tenant seeding |
 
-> **State as of 2026-09-02:** the plumbing is live but
-> `GOOGLE_APPLICATION_CREDENTIALS_JSON` is **empty on purpose**. The only key the
-> fleet has ever had (`e36d3ae2a40c`) is revoked — it fails the mint gate below —
-> so a gcp session currently gets the working login plane and no dead key. Filling
-> that one line with a gated key completes the class; nothing else is pending.
+> **State as of 2026-09-02:** the class is **live and proven end to end**. Key
+> `c0fdd0b97216` passes the mint gate, and a throwaway `CC_TOKENS=gcp` session
+> reached an authenticated `/app` as `auditor@agri.local` over HTTPS with nothing
+> hand-copied into it. The predecessor key `e36d3ae2a40c` was revoked and had been
+> hand-copied into three lane containers — see Rotation.
 
 **Content, not a mount.** The key is passed as a string and materialized to a file
 by the overlay's `entrypoint` (`tokens.d/gcp.yml`), because the google libraries
@@ -70,16 +70,24 @@ and is one copy-paste from every session, whereas this path only ever runs for a
 session that asked for the token class. The entrypoint override clears the image
 `CMD`, so it ends with an explicit `exec /bin/bash`.
 
-**`GIP_ADMIN_ACCESS_TOKEN` is not granted.** It is a ~1h OAuth access token; a
-static `.env` entry would ship a secret that expires before it is read. A session
-that needs persona seeding mints its own from the SA key it already has:
+**`GIP_ADMIN_ACCESS_TOKEN` is not granted**, and the app agrees: in
+`apps/web/lib/auth-providers/gip.ts` it is an *override*, not the primary path —
+absent it, `adminToken()` falls back to the app's own credential helper. A ~1h
+OAuth token in a static `.env` would ship a secret that expires before it is read.
 
-    node -e 'const{GoogleAuth}=require("google-auth-library");
-      new GoogleAuth({scopes:["https://www.googleapis.com/auth/cloud-platform"]})
-        .getAccessToken().then(t=>console.log(t))'
+**But do not assume a session can mint an admin token from the class key.** That
+same file records a measurement from 2026-09-01: the Identity Toolkit *admin*
+surface (`:signUp`, `:delete`, `:update`) needs `serviceusage.services.use` on the
+named project, and `foraudits-web@` holds only
+`roles/cloudsql.{client,instanceUser}` — so a token minted from the class key gets
+403 there, reported misleadingly as if the API key were wrong. Until that SA is
+granted `roles/serviceusage.serviceUsageConsumer`:
 
-(run from a workspace that has `google-auth-library`; `GOOGLE_APPLICATION_CREDENTIALS`
-is already pointing at the key). `gcloud` is deliberately not in the image.
+- **Sign-in and ordinary GCP calls** — fine on the class key.
+- **Persona seeding / invitation-accept** — needs the override, set to a token from
+  a principal that actually holds the role (`gcloud auth print-access-token` run by
+  a human with owner). `gcloud` is deliberately not in the image, so that value is
+  injected from outside per run, never stored.
 
 ### Where the values live, and why not in git
 
@@ -143,18 +151,41 @@ between them. **Never store a key that has not minted a token in front of you.**
 ### Verifying a session — a login, not an env dump
 
 A green `printenv` proves interpolation, not access. The acceptance test is a
-completed login:
+completed login. This walk was run end to end on 2026-09-02 and passed; the
+non-obvious steps are the ones that cost time.
 
-    CC_TOKENS=gcp cc-spawn --detach foraudits <throwaway-branch>
-    docker exec <session> bash -lc '
-      ls -l $GOOGLE_APPLICATION_CREDENTIALS          # 0600 pwuser
-      <mint gate above> $GOOGLE_APPLICATION_CREDENTIALS   # must be HTTP 200
-      cloud-sql-proxy --port 5433 "$CLOUD_SQL_INSTANCE" \
-        --credentials-file "$GOOGLE_APPLICATION_CREDENTIALS" &
-      # serve the app over HTTPS — the GIP session cookie is secure:true, so a
-      # plain-http origin never keeps a session — then log in as auditor@agri.local'
+    CC_TOKENS=gcp CC_MEM_LIMIT=6g cc-spawn --detach foraudits <throwaway-branch>
 
-Then tear the session down (`cc-stop` / `cc-cleanup-worktree`).
+1. **Key arrives without anyone copying it.** `stat` it: `mode=600
+   owner=pwuser:pwuser`, and `jq -r .private_key_id` should be the key you gated.
+2. **Re-run the mint gate inside the container** before trusting anything. HTTP 200.
+3. **Check out `feat/rebuild`, not `main`.** The GIP provider does not exist on
+   `main` — its login route is still Supabase, and `GIP_API_KEY` is read nowhere in
+   `apps/web`. Acceptance on `main` proves nothing about this class.
+4. **Install needs a user-level npm token.** `pnpm` refuses to expand env vars in the
+   project `.npmrc`, so `@wearefractional/ui` 401s from GitHub Packages. Fix, once
+   per session: `pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"`.
+5. **Use spare ports.** Host networking means 5432/5433 and 8443 may already be held
+   by another session. Run your own proxy on e.g. 5442 and repoint
+   `DATABASE_URL_TX_POOLER` at it for the run; serve the app on a free port.
+6. **Serve over HTTPS.** `next dev --experimental-https --hostname agri.localtest.me
+   --port <free>` — it fetches mkcert and mints a cert. The GIP cookie is
+   `secure:true`, so a plain-http origin never keeps a session.
+7. **The proof:** `POST /api/auth/login` with `auditor@agri.local` returns
+   `{"ok":true,"redirect":"/app"}` and sets `fa_session` + `fa_refresh` (`Secure`,
+   `HttpOnly`). Then `GET /app` **with** the cookie is 200 and **without** it
+   redirects to `/login?next=%2Fapp`. Both halves matter — the control proves the
+   session is doing the work.
+
+Then tear the session down (`cc-stop`, `cc-cleanup-worktree`, `cc-ledger
+set-by-session <name> done`). `cc-cleanup-worktree` refuses while Next's generated
+`next-env.d.ts`/`.gitignore` edits are uncommitted; discard them first.
+
+**Known-bad value:** `DATABASE_URL_SESSION` (the password plane, `postgres`
+superuser) was rejected with `password authentication failed` on 2026-09-02, tested
+both as a URI and with discrete parameters. The IAM plane
+(`DATABASE_URL_TX_POOLER`) works. That password needs rotating independently of the
+SA key — and it is stored in plaintext in a DSN, on a port every container can reach.
 
 Two things a fresh session does **not** get, by design:
 
