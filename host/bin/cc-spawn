@@ -58,7 +58,7 @@ echo
 # admission point for every spawn path: it checks the fleet/memory/start budgets and
 # takes the repo@ref reservation in ONE locked transaction, so concurrent orchestrators
 # cannot double-spawn or over-commit. Refusals print the reason and exit 2.
-# Session tokens: CC_TOKENS=vercel,railway,supabase opt-in.
+# Session tokens: CC_TOKENS=vercel,railway,supabase,gcp opt-in.
 CC_MEM_LIMIT="${CC_MEM_LIMIT:-4g}"
 case "$CC_MEM_LIMIT" in
   [2-8]g) REQ_GB="${CC_MEM_LIMIT%g}" ;;
@@ -150,9 +150,9 @@ else
   GRANTED=""
   for t in ${CC_TOKENS//,/ }; do
     case "$t" in
-      vercel|railway|supabase) COMPOSE_FILES+=(-f "tokens.d/$t.yml"); GRANTED="$GRANTED $t" ;;
+      vercel|railway|supabase|gcp) COMPOSE_FILES+=(-f "tokens.d/$t.yml"); GRANTED="$GRANTED $t" ;;
       "") ;;
-      *) echo "ERROR: unknown token class '$t' (allowed: vercel,railway,supabase)" >&2; exit 1 ;;
+      *) echo "ERROR: unknown token class '$t' (allowed: vercel,railway,supabase,gcp)" >&2; exit 1 ;;
     esac
   done
   [[ -n "$GRANTED" ]] && echo "      tokens granted:$GRANTED"
