@@ -11,9 +11,11 @@ One human, up to 4 laptop **orchestrator** sessions (Claude Code, running in
 whatever client repo the work concerns), driving a fleet of docker **worker**
 containers on cc-host over SSH/Tailscale. Each worker owns one repo/branch
 worktree and runs an autonomous agent (Claude `ccd`, Codex `cxd`, OpenCode
-`ocd`). Coordination is poll-based files, never keystroke injection; nothing
-advances on an agent's word — only on mechanically verified artifacts; merges
-are exclusively human.
+`ocd`). Coordination is poll-based files, never keystroke injection into a
+working session — the one sanctioned push is `cc-plan release --apply`, which
+resumes a session that declared itself blocked with typed WAITS once the
+artifact it named is verified; nothing advances on an agent's word — only on
+mechanically verified artifacts; merges are exclusively human.
 
 ```mermaid
 flowchart LR

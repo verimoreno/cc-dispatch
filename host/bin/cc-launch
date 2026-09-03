@@ -5,6 +5,7 @@
 #   cc-spawn --detach git@github.com:owner/repo.git branch
 #   cc-launch <session-name> --agent ccd --prompt-file task.md      # or --prompt "..."
 #   cc-launch <session-name> --agent ccd --prompt-file - < task.md  # stdin
+#   cc-launch <session-name> --require-tui --prompt-file -           # resume: exit 3 if no agent at prompt
 #
 # Handles the per-agent quirks that used to be manual choreography: the REPL
 # readiness footer gate, codex's update dialog, and the paste-detection
@@ -13,10 +14,11 @@ set -euo pipefail
 
 SESSION="${1:?usage: cc-launch <session-name> [--agent ccd|cxd|ocd|none] [--prompt-file F|--prompt TEXT] [--timeout SECS]}"
 shift
-AGENT=ccd; PROMPT=""; PROMPT_FILE=""; TIMEOUT=180
+AGENT=ccd; PROMPT=""; PROMPT_FILE=""; TIMEOUT=180; REQUIRE_TUI=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent) AGENT="$2"; shift 2 ;;
+    --require-tui) REQUIRE_TUI=1; shift ;;   # exit 3 (nothing typed) unless the agent is already at its prompt
     --prompt) PROMPT="$2"; shift 2 ;;
     --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
@@ -44,6 +46,14 @@ ready(){  # agent-specific persistent-footer markers (never the welcome banner)
     none) return 0 ;;
   esac
 }
+
+# 0. --require-tui (cc-plan release): a resume must land in the SAME conversation.
+# If the agent isn't at its idle prompt right now, refuse without typing anything —
+# launching a fresh agent here would be a cold start reported as a resume.
+if [[ $REQUIRE_TUI == 1 && "$AGENT" != "none" ]] && ! ready; then
+  echo "ERROR: '$AGENT' is not at its prompt in $SESSION (--require-tui) — pane tail:" >&2
+  pane | grep -v '^$' | tail -3 >&2; exit 3
+fi
 
 # 1. Launch the agent — but never type into a TUI that is already up OR booting
 # (cc-arch/cc-code auto-launch ocd on spawn: typing 'ocd' again would land inside
