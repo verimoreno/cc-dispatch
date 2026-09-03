@@ -40,8 +40,12 @@ per `cc-docker-host-setup`.
 - **plan** (optional) — a plan id under `/opt/cc-notes` (see [[cc-plan-notes]]).
   When set, prepend to the prompt:
   `You are part of plan /opt/cc-notes/<plan>/ — follow the plan-notes protocol in your CLAUDE.md before starting.`
-  and register the session in that plan's PLAN.md roster after step 3. Only
-  containers spawned after 2026-08-27 have the `/opt/cc-notes` mount.
+  then paste the machine-built context pack for this row under it
+  (`ssh cc-host 'cc-plan context PLAN_ID --repo-branch repo/branch'` — verified
+  artifacts + HANDOFF of every dependency, open blockers in its area; never
+  hand-summarise sibling notes instead), and register the session in that
+  plan's PLAN.md roster after step 3. Only containers spawned after
+  2026-08-27 have the `/opt/cc-notes` mount.
 
 **Name-length budget (hard constraint):** cc-spawn names the container AND its
 hostname `<repo-name>-<branch with / → ->`, and Docker rejects hostnames over

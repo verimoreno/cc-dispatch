@@ -112,7 +112,9 @@ ssh cc-host 'cc-plan json <plan> --verify'       # per plan: roster × notes × 
 Report each plan's `contradictions` array verbatim — the projection already
 computes the joins, so do NOT re-derive them from pane text. The kinds:
 `working-but-no-container` (agent believes it's working, container is gone),
-`stale-notes` (working but silent >2h), `done-unverified` (STATUS done with no
+`stale-notes` (working but silent >2h), `blocked-untyped` (blocked with no typed
+WAITS — only a human can release it), `waits-refuted` (its wait matches a claim
+that failed verification), `done-unverified` (STATUS done with no
 typed UNBLOCKS evidence — the dependency must NOT be released), and
 `evidence-failed` (claim's SHA no longer matches — force-push or stale claim).
 `parser_errors` mean a worker broke protocol v1 — report as "unknown", never

@@ -11,9 +11,11 @@ One human, up to 4 laptop **orchestrator** sessions (Claude Code, running in
 whatever client repo the work concerns), driving a fleet of docker **worker**
 containers on cc-host over SSH/Tailscale. Each worker owns one repo/branch
 worktree and runs an autonomous agent (Claude `ccd`, Codex `cxd`, OpenCode
-`ocd`). Coordination is poll-based files, never keystroke injection; nothing
-advances on an agent's word — only on mechanically verified artifacts; merges
-are exclusively human.
+`ocd`). Coordination is poll-based files, never keystroke injection into a
+working session — the one sanctioned push is `cc-plan release --apply`, which
+resumes a session that declared itself blocked with typed WAITS once the
+artifact it named is verified; nothing advances on an agent's word — only on
+mechanically verified artifacts; merges are exclusively human.
 
 ```mermaid
 flowchart LR
@@ -142,7 +144,7 @@ session.
 | `cc-spawn --detach <url> <branch>` | admission + worktree + container + registration, then exit |
 | `cc-launch <session> --agent … --prompt-file -` | launch agent TUI + inject prompt, host-side |
 | `cc-ledger list / show / set` | reservation state machine |
-| `cc-plan list / json <plan> [--verify] / verify / register` | read-only plan projection + evidence checks + roster edits |
+| `cc-plan list / init / json <plan> [--verify] / verify / register / context / release [--apply]` | plan projection + evidence checks + roster edits; `context` = per-session context pack (verified artifacts + HANDOFF of deps), `release` = resume blocked residents whose typed WAITS are verified (dry-run unless `--apply`) |
 | `cc-reconcile [--fail-attempt --adopt]` | ledger × docker × agent-deck cross-check (read-only; repairs audited) |
 | `cc-stop` / `cc-cleanup-worktree` | reap (→ ledger stopping/done) |
 | `cc-github-token <owner/repo>` | mint single-repo ~1h App token |
