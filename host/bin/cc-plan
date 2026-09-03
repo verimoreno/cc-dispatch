@@ -3,21 +3,31 @@
 -> one machine-readable JSON view per plan (schema 1). The Plan Board and
 cc-supervise render THIS, never ad-hoc markdown parsing.
 
-  cc-plan list                     active plan ids
-  cc-plan json <plan-id> [--verify]  projection for one plan
-  cc-plan json --all [--verify]      all active plans
-  cc-plan verify <plan-id>           evidence check only (exit 1 if any claim fails)
+  cc-plan list                       active plan ids
+  cc-plan init <plan-id> [--goal ..]  create PLAN.md (+notes/); adopts existing notes into the roster
+  cc-plan json <plan-id> [--verify]   projection for one plan
+  cc-plan json --all [--verify]       all active plans
+  cc-plan verify <plan-id>            evidence check only (exit 1 if any claim fails)
+  cc-plan register <plan-id> ...      roster edit (creates PLAN.md if missing)
+  cc-plan context <plan-id> <session|--repo-branch r/b>
+                                      context pack for a session: verified artifacts +
+                                      HANDOFF of its dependencies, open blockers in its area
+  cc-plan release <plan-id> [--apply] blocked residents whose WAITS are all verified:
+                                      dry-run by default; --apply resumes them via cc-launch
 
-UNBLOCKS grammar v1 (typed, immutable evidence — anything else is a legacy claim
+Notes grammar v2 (typed, immutable evidence — anything else is a legacy claim
 that releases nothing):
   UNBLOCKS: <name> pr repo=<owner/repo> number=<N> head=<40-hex-sha>
   UNBLOCKS: <name> commit repo=<owner/repo> sha=<40-hex-sha> path=<repo-relative-path>
+  WAITS: <name> from=<session|any>      what a blocked session needs — matched against UNBLOCKS
+  HANDOFF:                              <= 12 lines a downstream session must know; ends at a
+  <lines>                               blank line, a heading, or another keyword line
 
 Malformed input is reported as parser_errors — never silently inferred green.
 """
 import argparse, calendar, json, os, re, subprocess, sys, time
 
-NOTES_ROOT = "/opt/cc-notes"
+NOTES_ROOT = os.environ.get("CC_NOTES_ROOT", "/opt/cc-notes")
 BASE_DIR = os.environ.get("CC_BASE_DIR", os.path.expanduser("~/Fractional"))
 LEDGER = "/opt/cc-data/ledger"
 STALE_MIN = 120
@@ -29,6 +39,13 @@ RE_PR = re.compile(r"^UNBLOCKS: +(?P<name>[A-Za-z0-9._-]+) +pr +repo=(?P<repo>[A
 RE_COMMIT = re.compile(r"^UNBLOCKS: +(?P<name>[A-Za-z0-9._-]+) +commit +repo=(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)"
                        r" +sha=(?P<sha>[0-9a-f]{40}) +path=(?P<path>[^\s]+)\s*$")
 RE_LEGACY = re.compile(r"^UNBLOCKS: *(?P<text>.+)$")
+RE_WAITS = re.compile(r"^WAITS: +(?P<name>[A-Za-z0-9._-]+) +from=(?P<src>[A-Za-z0-9._-]+)\s*$")
+RE_WAITS_LEGACY = re.compile(r"^WAITS: *(?P<text>.+)$")
+RE_HANDOFF = re.compile(r"^HANDOFF:\s*(?P<rest>.*)$")
+RE_KEYWORD = re.compile(r"^(STATUS|UNBLOCKS|WAITS|HANDOFF):")
+HANDOFF_MAX_LINES = 12
+PROSE_MAX_LINES = 40
+PLAN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 def sh(cmd, timeout=15):
     try:
@@ -79,22 +96,51 @@ def parse_plan_md(text, errors):
     if not plan["status"]: errors.append("PLAN.md: no STATUS line")
     return plan
 
+def new_entry(t):
+    return {"time": t, "status": None, "unblocks": [], "legacy_unblocks": [],
+            "waits": [], "legacy_waits": [], "handoff": None, "prose": []}
+
 def parse_notes(path, errors):
     entries, cur = [], None
+    base = os.path.basename(path)
+    in_handoff = False
     try:
         with open(path) as f: text = f.read()
     except OSError as e:
-        errors.append(f"{os.path.basename(path)}: unreadable: {e}")
+        errors.append(f"{base}: unreadable: {e}")
         return []
     for ln in text.splitlines():
         m = RE_ENTRY.match(ln)
         if m:
-            cur = {"time": m.group(1), "status": None, "unblocks": [], "legacy_unblocks": []}
+            cur = new_entry(m.group(1)); in_handoff = False
             entries.append(cur); continue
         if cur is None:
-            if ln.strip(): errors.append(f"{os.path.basename(path)}: content before first entry heading")
-            cur = {"time": None, "status": None, "unblocks": [], "legacy_unblocks": []}
+            if ln.strip(): errors.append(f"{base}: content before first entry heading")
+            cur = new_entry(None)
             entries.append(cur)
+        if in_handoff:
+            if not ln.strip() or RE_KEYWORD.match(ln) or ln.startswith("## "):
+                in_handoff = False
+            else:
+                lines = cur["handoff"]
+                if len(lines) < HANDOFF_MAX_LINES:
+                    lines.append(ln.rstrip())
+                elif len(lines) == HANDOFF_MAX_LINES:
+                    errors.append(f"{base}: HANDOFF longer than {HANDOFF_MAX_LINES} lines — truncated")
+                    lines.append(None)   # sentinel: reported once, further lines dropped
+                continue
+        m = RE_HANDOFF.match(ln)
+        if m:
+            cur["handoff"] = [m["rest"].strip()] if m["rest"].strip() else []
+            in_handoff = True; continue
+        m = RE_WAITS.match(ln)
+        if m:
+            cur["waits"].append({"name": m["name"], "from": m["src"]}); continue
+        m = RE_WAITS_LEGACY.match(ln)
+        if m:
+            cur["legacy_waits"].append(m["text"].strip()[:200])
+            errors.append(f"{base}: untyped WAITS (needs `WAITS: <name> from=<session|any>`): {ln[:60]}")
+            continue
         m = RE_STATUS.match(ln)
         if m: cur["status"] = m.group(1); continue
         if ln.startswith("STATUS:"):
@@ -115,7 +161,12 @@ def parse_notes(path, errors):
                                         "sha": m["sha"], "path": p})
             continue
         m = RE_LEGACY.match(ln)
-        if m: cur["legacy_unblocks"].append(m["text"].strip()[:200])
+        if m: cur["legacy_unblocks"].append(m["text"].strip()[:200]); continue
+        if ln.strip() and len(cur["prose"]) < PROSE_MAX_LINES:
+            cur["prose"].append(ln.rstrip())
+    for e in entries:
+        if e["handoff"] is not None:
+            e["handoff"] = "\n".join(l for l in e["handoff"] if l is not None) or None
     return entries
 
 def gh_token():
@@ -197,7 +248,8 @@ def project(plan_id, verify=False):
         s = {"name": name, "repo_branch": row["repo_branch"], "task": row["task"],
              "depends_on": row["depends_on"], "planned": name.upper() == "PLANNED",
              "latest_status": None, "latest_time": None, "note_age_min": None,
-             "unblocks": [], "legacy_unblocks": [], "ledger_state": None,
+             "unblocks": [], "legacy_unblocks": [], "waits": [], "legacy_waits": [],
+             "handoff": None, "latest_prose": [], "release": None, "ledger_state": None,
              "container": None, "in_deck": None, "state": "unknown"}
         if s["planned"]:
             s["state"] = "waiting-to-spawn"; sessions.append(s); continue
@@ -210,6 +262,11 @@ def project(plan_id, verify=False):
             for e in entries:
                 if e["status"]: s["latest_status"], s["latest_time"] = e["status"], e["time"]
                 s["unblocks"] += e["unblocks"]; s["legacy_unblocks"] += e["legacy_unblocks"]
+                for w in e["waits"]:
+                    if w not in s["waits"]: s["waits"].append(dict(w))
+                s["legacy_waits"] += e["legacy_waits"]
+                if e["handoff"]: s["handoff"] = e["handoff"]
+            if entries: s["latest_prose"] = entries[-1]["prose"]
             if s["latest_time"] and (ep := epoch(s["latest_time"])):
                 s["note_age_min"] = round((now - ep) / 60)
         else:
@@ -235,6 +292,10 @@ def project(plan_id, verify=False):
             contradictions.append({"session": name, "kind": "done-unverified",
                                    "detail": "STATUS done with no typed UNBLOCKS evidence"
                                              + (" (legacy claims only)" if s["legacy_unblocks"] else "")})
+        if st == "blocked" and not s["waits"]:
+            contradictions.append({"session": name, "kind": "blocked-untyped",
+                                   "detail": "STATUS blocked with no typed WAITS line — cannot be auto-released"
+                                             + (" (legacy WAITS only)" if s["legacy_waits"] else "")})
         if verify:
             for c in s["unblocks"]:
                 ok, reason = verify_claim(c)
@@ -243,10 +304,73 @@ def project(plan_id, verify=False):
                     contradictions.append({"session": name, "kind": "evidence-failed",
                                            "detail": f"{c['name']}: {reason}"})
         sessions.append(s)
+    releases = resolve_releases(sessions, verify, contradictions)
     return {"schema": 1, "plan": plan_id, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "status": plan["status"], "goal": plan["goal"], "orchestrator": plan["orchestrator"],
-            "sessions": sessions, "assignments": plan["assignments"],
+            "sessions": sessions, "assignments": plan["assignments"], "releases": releases,
             "contradictions": contradictions, "parser_errors": errors}
+
+def split_deps(text):
+    """roster 'depends on' cell -> session names ('—', '-', '', 'none' = no deps)."""
+    out = []
+    for tok in re.split(r"[,\s]+", (text or "").strip()):
+        if tok and tok not in ("—", "-", "none", "n/a"): out.append(tok)
+    return out
+
+def claim_state(c, verify):
+    """typed UNBLOCKS claim -> satisfied | unverified | refuted"""
+    if not verify: return "unverified"
+    v = c.get("verified")
+    return "satisfied" if v is True else "refuted" if v is False else "unverified"
+
+def resolve_releases(sessions, verify, contradictions):
+    """Match every WAITS against UNBLOCKS across the plan (the artifact-layer mesh);
+    derive per-session readiness. Mutates sessions[*].waits / .release."""
+    by_name = {s["name"]: s for s in sessions}
+    claims = [(s["name"], c) for s in sessions for c in s["unblocks"]]
+    releases = []
+    for s in sessions:
+        if s["planned"]:
+            deps = split_deps(s["depends_on"]); states = []
+            for d in deps:
+                dep = by_name.get(d)
+                if not dep or dep["state"] != "done" or not dep["unblocks"]:
+                    states.append("open"); continue
+                cs = {claim_state(c, verify) for c in dep["unblocks"]}
+                states.append("refuted" if "refuted" in cs else "unverified" if "unverified" in cs else "satisfied")
+            if any(x in ("open", "refuted") for x in states): continue
+            verified = all(x == "satisfied" for x in states)   # vacuously true with no deps
+            s["release"] = "ready-to-spawn" if verified else "ready-to-spawn-unverified"
+            releases.append({"session": s["name"], "repo_branch": s["repo_branch"], "kind": "spawn",
+                             "verified": verified, "depends_on": deps})
+            continue
+        for w in s["waits"]:
+            match = [(who, c) for who, c in claims
+                     if c["name"] == w["name"] and (w["from"] == "any" or who == w["from"]) and who != s["name"]]
+            if not match:
+                w["resolution"] = "open"; continue
+            best = None
+            for who, c in match:
+                st = claim_state(c, verify)
+                if best is None or ("satisfied", "unverified", "refuted").index(st) < \
+                        ("satisfied", "unverified", "refuted").index(best[0]):
+                    best = (st, who, c)
+            w["resolution"], w["by"] = best[0], best[1]
+            w["claim"] = {k: best[2][k] for k in ("type", "repo", "sha") if k in best[2]}
+            if best[2]["type"] == "pr": w["claim"]["number"] = best[2]["number"]
+            if best[2]["type"] == "commit": w["claim"]["path"] = best[2]["path"]
+            if best[0] == "refuted":
+                contradictions.append({"session": s["name"], "kind": "waits-refuted",
+                                       "detail": f"waits for {w['name']} but the only claim failed verification"})
+        if s["state"] == "blocked" and s["waits"]:
+            res = [w["resolution"] for w in s["waits"]]
+            if all(r in ("satisfied", "unverified") for r in res):
+                verified = all(r == "satisfied" for r in res)
+                s["release"] = "ready-to-resume" if verified else "ready-to-resume-unverified"
+                releases.append({"session": s["name"], "repo_branch": s["repo_branch"], "kind": "resume",
+                                 "verified": verified, "resident": bool(s["container"] and s["container"].startswith("Up")),
+                                 "waits": s["waits"]})
+    return releases
 
 def register_row(text, session, repo_branch, task="", depends="—"):
     """Replace the PLANNED roster row for repo_branch with the real session name,
@@ -273,6 +397,182 @@ def register_row(text, session, repo_branch, task="", depends="—"):
     return "".join(lines), "appended new row"
 
 
+PLAN_TEMPLATE = """# {title}
+
+GOAL: {goal}
+ORCHESTRATOR: {orchestrator}
+STATUS: active
+
+## Roster
+| session | repo/branch | task | depends on |
+|---|---|---|---|
+{roster}
+## Assignments
+| area / surface | owner |
+|---|---|
+| <fill before the second session spawns> | — |
+
+## Log
+- {date} created by cc-plan init{adopted}
+"""
+
+def init_plan(plan_id, goal="", orchestrator="", title=""):
+    """Create <plan>/PLAN.md + notes/. A dir that already has notes/ but no PLAN.md
+    (a plan that skipped init) is adopted: one roster row per existing note file,
+    repo/branch taken from the ledger when it knows the session."""
+    if not PLAN_ID_RE.match(plan_id):
+        raise ValueError(f"plan id must match [a-z0-9-]: {plan_id!r}")
+    pdir = os.path.join(NOTES_ROOT, plan_id)
+    path = os.path.join(pdir, "PLAN.md")
+    if os.path.exists(path):
+        raise FileExistsError(f"{path} already exists")
+    os.makedirs(os.path.join(pdir, "notes"), exist_ok=True)
+    ledger = ledger_by_session()
+    rows = []
+    for fn in sorted(os.listdir(os.path.join(pdir, "notes"))):
+        if not fn.endswith(".md"): continue
+        name = fn[:-3]; cur = ledger.get(name) or {}
+        rb = f"{cur['repo'].rsplit('/', 1)[-1].removesuffix('.git')}/{cur['ref']}" if cur.get("repo") and cur.get("ref") else "?"
+        rows.append(f"| {name} | {rb} | (adopted — fill in) | — |")
+    if not rows: rows.append("| PLANNED | <repo>/<branch> | <one line> | — |")
+    text = PLAN_TEMPLATE.format(title=title or plan_id, goal=goal or "<one paragraph — what done looks like>",
+                                orchestrator=orchestrator or "<who owns this file>",
+                                roster="\n".join(rows) + "\n", date=time.strftime("%Y-%m-%d"),
+                                adopted=f" (adopted {len(rows)} existing note files)" if rows and "PLANNED" not in rows[0] else "")
+    with open(path, "w") as f: f.write(text)
+    return path, len(rows) if "PLANNED" not in rows[0] else 0
+
+def append_log(plan_id, line):
+    path = os.path.join(NOTES_ROOT, plan_id, "PLAN.md")
+    with open(path, "a") as f: f.write(f"- {time.strftime('%Y-%m-%d')} {line}\n")
+
+def fmt_claim(c):
+    if c["type"] == "pr":
+        core = f"pr {c['repo']}#{c['number']} head={c['sha']}"
+    else:
+        core = f"commit {c['repo']}@{c['sha']} path={c['path']}"
+    v = c.get("verified")
+    tag = "VERIFIED" if v is True else "REFUTED" if v is False else "unverified"
+    reason = c.get("verify_reason")
+    return f"{c['name']}: {core} — {tag}" + (f" ({reason})" if reason else "")
+
+def pick_session(proj, name=None, repo_branch=None):
+    for s in proj["sessions"]:
+        if name and s["name"] == name: return s
+        if repo_branch and not name and s["repo_branch"] == repo_branch: return s
+    names = ", ".join(f"{s['name']}[{s['repo_branch']}]" for s in proj["sessions"])
+    raise KeyError(f"no roster row for {name or repo_branch!r}; roster: {names}")
+
+def build_context(proj, target):
+    """Markdown context pack for `target` (a roster row): what the orchestrator used
+    to assemble by hand from sibling notes. Verified artifacts only carry weight —
+    everything else is labelled as a claim."""
+    by_name = {s["name"]: s for s in proj["sessions"]}
+    plan = proj["plan"]
+    out = [f"## Plan context — {plan} → {target['name']} ({target['repo_branch']})",
+           f"generated {proj['generated_at']} by `cc-plan context` — regenerate, don't hand-edit", "",
+           f"GOAL: {proj['goal'] or '(none in PLAN.md)'}",
+           f"YOUR TASK: {target['task']}",
+           f"DEPENDS ON: {target['depends_on'] or '—'}"]
+    real = [a for a in proj["assignments"] if a["owner"] not in ("—", "-", "") and not a["area"].startswith("<")]
+    mine = [a["area"] for a in real if a["owner"] == target["name"]]
+    others = [f"{a['area']} → {a['owner']}" for a in real if a["owner"] != target["name"]]
+    out += [f"YOU OWN: {', '.join(mine) if mine else '(nothing assigned — check PLAN.md Assignments)'}",
+            f"DO NOT TOUCH: {'; '.join(others) if others else '(no other assignments)'}", ""]
+    deps = split_deps(target["depends_on"])
+    for w in target.get("waits", []):
+        src = w["from"] if w["from"] != "any" else w.get("by")
+        if src and src not in deps: deps.append(src)
+    out.append("### Dependencies")
+    if not deps: out.append("(none)")
+    for d in deps:
+        dep = by_name.get(d)
+        if not dep:
+            out.append(f"#### {d} — NOT IN ROSTER"); continue
+        out.append(f"#### {d} — STATUS {dep['latest_status'] or 'no notes'}"
+                   + (f" ({dep['latest_time']})" if dep['latest_time'] else ""))
+        if dep["unblocks"]:
+            out.append("Artifacts:")
+            out += [f"- {fmt_claim(c)}" for c in dep["unblocks"]]
+        else:
+            out.append("- no typed UNBLOCKS evidence"
+                       + (f" (legacy: {'; '.join(dep['legacy_unblocks'])[:200]})" if dep["legacy_unblocks"] else ""))
+        if dep["handoff"]:
+            out += ["HANDOFF:", *("  " + l for l in dep["handoff"].splitlines())]
+        else:
+            out.append(f"- no HANDOFF block — read /opt/cc-notes/{plan}/notes/{d}.md")
+        out.append("")
+    if target.get("waits"):
+        out.append("### Your WAITS")
+        for w in target["waits"]:
+            line = f"- {w['name']} from={w['from']}: {w.get('resolution', 'open')}"
+            if w.get("claim"):
+                c = w["claim"]
+                line += f" — by {w['by']}: " + (f"pr {c['repo']}#{c['number']} head={c['sha']}" if c["type"] == "pr"
+                                              else f"commit {c['repo']}@{c['sha']} path={c['path']}")
+            out.append(line)
+        out.append("")
+    keys = [target["name"].lower()] + [m.lower() for m in mine]
+    hits = []
+    for s in proj["sessions"]:
+        if s["name"] == target["name"] or s["state"] != "blocked": continue
+        text = " ".join(s["latest_prose"]).lower()
+        if any(k and k in text for k in keys) or any(w.get("from") == target["name"] for w in s["waits"]):
+            hits.append(s)
+    out.append("### Open blockers touching your area")
+    if not hits: out.append("(none)")
+    for s in hits:
+        out.append(f"#### {s['name']} — blocked ({s['latest_time']})")
+        out += [f"- WAITS: {w['name']} from={w['from']} [{w.get('resolution', 'open')}]" for w in s["waits"]]
+        out += ["  " + l for l in s["latest_prose"][:8]]
+    out += ["", f"Full trail: /opt/cc-notes/{plan}/notes/<session>.md — notes are claims; "
+                "only lines marked VERIFIED above were checked against GitHub / the bare repo."]
+    return "\n".join(out) + "\n"
+
+def resume_prompt(proj, target):
+    ctx = build_context(proj, target)
+    return (f"You are part of plan /opt/cc-notes/{proj['plan']}/ — follow the plan-notes protocol in your CLAUDE.md.\n"
+            f"Your WAITS are now satisfied and verified (see below). Resume from your last note: re-read "
+            f"/opt/cc-notes/{proj['plan']}/notes/{target['name']}.md, fetch the artifacts named here, and "
+            f"continue your task. Write a `STATUS: working` entry first.\n\n" + ctx)
+
+def release(plan_id, apply=False, agent="ccd", timeout=180):
+    proj = project(plan_id, verify=True)
+    if proj.get("error"): sys.exit(f"ERROR: {proj['error']}")
+    plan_text = open(os.path.join(NOTES_ROOT, plan_id, "PLAN.md")).read()
+    acted = 0
+    for r in proj["releases"]:
+        s = pick_session(proj, None, r["repo_branch"]) if r["kind"] == "spawn" else pick_session(proj, r["session"])
+        if r["kind"] == "spawn":
+            print(f"SPAWN-READY  {s['name']} [{s['repo_branch']}] deps={r['depends_on'] or '—'} "
+                  f"verified={r['verified']} — spawn it via cc-spawn-session with "
+                  f"`cc-plan context {plan_id} --repo-branch {s['repo_branch']}` in the prompt")
+            continue
+        tag = ",".join(f"{w['name']}@{(w.get('claim') or {}).get('sha', '')[:12]}" for w in r["waits"])
+        log_line = f"released {s['name']}: {tag}"
+        if not r["verified"]:
+            print(f"HOLD         {s['name']} — WAITS matched but not all verified: "
+                  + "; ".join(f"{w['name']}={w['resolution']}" for w in r["waits"])); continue
+        if not r["resident"]:
+            print(f"HOLD         {s['name']} — WAITS verified but container not running ({s['container'] or 'absent'}); respawn manually"); continue
+        if log_line in plan_text:
+            print(f"ALREADY      {s['name']} — {tag} released earlier (PLAN.md Log); waiting for its next note"); continue
+        if not apply:
+            print(f"WOULD-RESUME {s['name']} — {tag} (run with --apply)"); continue
+        prompt = resume_prompt(proj, s)
+        try:
+            res = subprocess.run(["cc-launch", s["name"], "--agent", agent, "--timeout", str(timeout),
+                                  "--prompt-file", "-"], input=prompt, text=True, capture_output=True, timeout=timeout + 60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"FAILED       {s['name']} — cc-launch: {e}"); continue
+        if res.returncode == 0:
+            append_log(plan_id, log_line); acted += 1
+            print(f"RESUMED      {s['name']} — {tag}")
+        else:
+            print(f"FAILED       {s['name']} — cc-launch exit {res.returncode}: {(res.stderr or res.stdout).strip()[:300]}")
+    if not proj["releases"]: print("nothing releasable")
+    return acted
+
 def active_plans():
     if not os.path.isdir(NOTES_ROOT): return []
     return sorted(d for d in os.listdir(NOTES_ROOT)
@@ -282,6 +582,14 @@ def main():
     p = argparse.ArgumentParser(prog="cc-plan")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
+    i = sub.add_parser("init"); i.add_argument("plan")
+    i.add_argument("--goal", default=""); i.add_argument("--orchestrator", default="")
+    i.add_argument("--title", default="")
+    c = sub.add_parser("context"); c.add_argument("plan"); c.add_argument("session", nargs="?")
+    c.add_argument("--repo-branch"); c.add_argument("--no-verify", action="store_true")
+    rl = sub.add_parser("release"); rl.add_argument("plan")
+    rl.add_argument("--apply", action="store_true"); rl.add_argument("--agent", default="ccd")
+    rl.add_argument("--timeout", type=int, default=180)
     j = sub.add_parser("json")
     j.add_argument("plan", nargs="?"); j.add_argument("--all", action="store_true")
     j.add_argument("--verify", action="store_true")
@@ -293,6 +601,22 @@ def main():
     a = p.parse_args()
     if a.cmd == "list":
         for pl in active_plans(): print(pl)
+    elif a.cmd == "init":
+        try:
+            path, adopted = init_plan(a.plan, a.goal, a.orchestrator, a.title)
+        except (ValueError, FileExistsError, OSError) as e:
+            sys.exit(f"ERROR: {e}")
+        print(f"created {path}" + (f" (adopted {adopted} existing note files into the roster)" if adopted else ""))
+    elif a.cmd == "context":
+        if not a.session and not a.repo_branch: p.error("context needs a session name or --repo-branch")
+        proj = project(a.plan, verify=not a.no_verify)
+        if proj.get("error"): sys.exit(f"ERROR: {proj['error']}")
+        try:
+            sys.stdout.write(build_context(proj, pick_session(proj, a.session, a.repo_branch)))
+        except KeyError as e:
+            sys.exit(f"ERROR: {e.args[0]}")
+    elif a.cmd == "release":
+        release(a.plan, apply=a.apply, agent=a.agent, timeout=a.timeout)
     elif a.cmd == "json":
         if a.all:
             json.dump([project(pl, a.verify) for pl in active_plans()], sys.stdout, indent=1)
@@ -305,6 +629,12 @@ def main():
         # Orchestrator-only helper (PLAN.md keeps its single writer): mechanical
         # roster edit instead of hand-sed through markdown pipes.
         path = os.path.join(NOTES_ROOT, a.plan, "PLAN.md")
+        if not os.path.exists(path):
+            try:
+                init_plan(a.plan)
+                print(f"WARN: {path} was missing — created it (fill GOAL/ORCHESTRATOR/Assignments)", file=sys.stderr)
+            except (ValueError, OSError) as e:
+                sys.exit(f"ERROR: {e}")
         try:
             text = open(path).read()
         except OSError as e:

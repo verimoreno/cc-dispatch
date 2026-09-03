@@ -142,7 +142,7 @@ session.
 | `cc-spawn --detach <url> <branch>` | admission + worktree + container + registration, then exit |
 | `cc-launch <session> --agent … --prompt-file -` | launch agent TUI + inject prompt, host-side |
 | `cc-ledger list / show / set` | reservation state machine |
-| `cc-plan list / json <plan> [--verify] / verify / register` | read-only plan projection + evidence checks + roster edits |
+| `cc-plan list / init / json <plan> [--verify] / verify / register / context / release [--apply]` | plan projection + evidence checks + roster edits; `context` = per-session context pack (verified artifacts + HANDOFF of deps), `release` = resume blocked residents whose typed WAITS are verified (dry-run unless `--apply`) |
 | `cc-reconcile [--fail-attempt --adopt]` | ledger × docker × agent-deck cross-check (read-only; repairs audited) |
 | `cc-stop` / `cc-cleanup-worktree` | reap (→ ledger stopping/done) |
 | `cc-github-token <owner/repo>` | mint single-repo ~1h App token |
