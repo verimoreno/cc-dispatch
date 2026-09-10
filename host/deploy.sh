@@ -160,8 +160,15 @@ switch_to(){  # $1 = release dir; symlink switch under the spawn lock, then live
   if [[ -d "$SESSIONS/tokens.d" && ! -L "$SESSIONS/tokens.d" ]]; then mv "$SESSIONS/tokens.d" "$SESSIONS/tokens.d.pre-release"; fi
   xln "$CURRENT/sessions/tokens.d" "$SESSIONS/tokens.d"
   flock -u 9
-  render_claude | docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/CLAUDE.md'
-  render_codex  | docker run --rm -i -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat > /v/config.toml'
+  # RENDER BEFORE OPENING THE WRITER. `render_x | docker run ... 'cat > /v/f'`
+  # reads and truncates the same file: the shell starts both sides at once, the
+  # writer truncates, and the reader inside render_x gets an empty file. That
+  # wiped every project trust_level out of the codex config.toml once already.
+  local claude_md codex_toml
+  claude_md=$(render_claude); [[ -n "$claude_md" ]] || die "render_claude produced nothing"
+  codex_toml=$(render_codex); [[ -n "$codex_toml" ]] || die "render_codex produced nothing"
+  printf '%s\n' "$claude_md" | docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/CLAUDE.md'
+  printf '%s\n' "$codex_toml" | docker run --rm -i -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat > /v/config.toml'
   render_cron | crontab -
 }
 
