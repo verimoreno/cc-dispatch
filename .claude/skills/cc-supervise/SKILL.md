@@ -74,11 +74,20 @@ gh -R <owner/repo> pr list --head <branch> --json number,url,state,statusCheckRo
 - PR open, a check failed → **pr-red** (capture the failing check name + summary
   via `gh -R <owner/repo> pr checks <branch>`).
 
+**d. Memory — did anything get OOM-killed at its ceiling (one call, whole fleet)**
+```bash
+ssh cc-host 'for n in $(docker ps --format "{{.Names}}" --filter ancestor=cc-session:latest); do
+  echo "$n $(docker exec $n cat /sys/fs/cgroup/memory.events | grep oom_kill) cap=$(docker inspect -f "{{.HostConfig.Memory}}" $n | awk "{print \$1/2^30}")g"; done'
+```
+`oom_kill N` with N > 0 → a build/test inside was killed at the cap; the agent
+cannot raise it (no docker socket) and will loop on a failing build if left.
+
 ### 3. Classify each session into ONE state
 
 Priority order (first match wins):
 | State | Meaning | Recommended action (for Veri to take) |
 |---|---|---|
+| `oom` | `oom_kill` > 0 in memory.events | Resize live, no restart: `ssh cc-host 'docker update --memory 6g --memory-swap 6g NAME'` (next class up: 3→6→8); the ledger follows on its own |
 | `pr-red` | PR open, CI failing | Inject fix-prompt with the failing check output; or investigate |
 | `waiting-for-input` | Agent asked a question, nobody's answering | Answer it (mechanical → could be automated later) |
 | `stuck` | Idle pane + no commits + no PR after a while | Attach and unblock, or respawn |
@@ -89,12 +98,12 @@ Priority order (first match wins):
 
 ### 4. Report — one table, most-urgent first
 
-Print a single table sorted so `pr-red` / `waiting-for-input` / `stuck` are at the
+Print a single table sorted so `oom` / `pr-red` / `waiting-for-input` / `stuck` are at the
 top (those are the only rows that need Veri). Columns:
 
 `session · repo/branch · state · commits · PR# · CI · recommended action`
 
-Then a one-line summary: `N sessions · X need you (pr-red/waiting/stuck) · Y healthy · Z done`.
+Then a one-line summary: `N sessions · X need you (oom/pr-red/waiting/stuck) · Y healthy · Z done`.
 
 **Inject nothing.** End by naming the specific sessions that need a human and why.
 If run under `/loop`, only speak up when the "need you" count is > 0 or changed
