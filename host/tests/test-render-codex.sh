@@ -56,4 +56,10 @@ if render_codex | python3 -c 'import sys,tomllib; tomllib.loads(sys.stdin.read()
 then echo "FAIL inline-table ceiling: expected unparseable output, got valid TOML"; rc=1
 else echo "ok   inline-table ceiling caught by the TOML parse"; fi
 
+# 6. regression: piping a render straight into a writer on the SAME file truncates
+# it before the render has read it — that wiped the codex trust levels once.
+if grep -qE 'render_(claude|codex) *\| *docker run' "$HERE/../deploy.sh"; then
+  echo "FAIL render piped straight into its own file's writer — render to a var first"; rc=1
+else echo "ok   no render piped into its own writer"; fi
+
 exit $rc
