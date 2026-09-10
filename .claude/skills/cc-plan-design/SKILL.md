@@ -84,13 +84,20 @@ file, an interface) or admit the units aren't really separable.
   around there. Check before designing wider: `ssh cc-host 'cc-ledger list; docker ps -q | wc -l'`.
 - **One branch per session, always** (git can't co-checkout a branch twice).
   Name them `<plan-slug>/<unit>`; keep `len(repo)+1+len(branch)` ≤ 63.
-- **Memory class per unit**: browser/e2e/build-heavy → note `CC_MEM_LIMIT=6g`
-  in its brief line; default 4g otherwise.
+- **Memory class per unit** — from what the unit will actually run, not its
+  verify class: `2g` review/plan/docs-only (no build, no tests beyond lint);
+  `3g` ordinary code units (default — Claude Code + tsc/vitest peaks ≈ 2G);
+  `6g` only if the unit itself runs Playwright/Chromium or a full Next build;
+  `8g` known hogs (long-running data/sync runners). Note `CC_MEM_LIMIT=…` in
+  the brief line. The admission budget SUMS ceilings, so every over-guess costs
+  a slot; guess low — a live session is raised with no restart:
+  `ssh cc-host 'docker update --memory 8g --memory-swap 8g NAME'`.
 - **Verification class per unit** — decided HERE, not improvised by the worker:
   `browser` (has a UI — E2E via Playwright/Chromium; name where the preview URL
   comes from, e.g. the Vercel bot comment on the PR, or a local dev command),
   `api` (integration tests against real endpoints), `cli` (run the real commands),
-  or `lib` (unit tests). Browser units also get the 6g memory class.
+  or `lib` (unit tests). Browser units get the 6g memory class only if they
+  drive Chromium themselves — a browser unit whose E2E runs in CI is 3g.
 - **Declare the integration strategy in PLAN.md**: client repos = PR + CI per
   session, orchestrator merges after `cc-plan verify` + green checks; the
   snake-demo push-to-main shortcut is for demos only. State who merges, in

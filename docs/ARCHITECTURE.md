@@ -63,7 +63,7 @@ together, so concurrent orchestrators cannot double-spawn or overcommit:
 - **fail-closed**: any probe error refuses
 - env knobs: `CC_ADMIT_GB` `CC_MAX_SESSIONS` `CC_MAX_STARTS`
 
-Per-spawn options: `CC_MEM_LIMIT=6g` (browser/build-heavy; default 4g),
+Per-spawn options: `CC_MEM_LIMIT=2g|3g|6g|8g` (review-only | default | Playwright/full build | known hog; a running session is resized live with `docker update --memory 8g --memory-swap 8g NAME`, the ledger follows),
 `CC_TOKENS=vercel,railway,supabase` (deploy tokens are NOT default),
 `CC_SCOPED_TOKEN=1` (single-repo ~1h GitHub App token; refuses rather than
 silently falling back — see `docs/scoped-github-tokens.md`).

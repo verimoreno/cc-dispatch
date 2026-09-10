@@ -71,13 +71,17 @@ services:
       - CC_HOST_MODE=autonomous
 
     # ---- Resource caps (host reality: 62 GiB RAM, 12 threads) ----
-    # Dynamic per-spawn cap: 4g default, 6g for browser/build-heavy tasks via
-    # CC_MEM_LIMIT. Admission (cc-spawn) bounds the SUM of admitted limits at
+    # Dynamic per-spawn cap: 3g default (Claude Code + tsc/vitest peaks ≈ 2G),
+    # 2g for review/plan-only, 6g only for Playwright/full builds, 8g for known
+    # hogs — via CC_MEM_LIMIT. Cheap to raise live without a restart:
+    #   docker update --memory 8g --memory-swap 8g NAME   (cc-ledger follows)
+    # ponytail: a 3g box OOM-kills a big `next build` inside the container, not
+    # the session — the agent sees a failed build; resize with the line above. Admission (cc-spawn) bounds the SUM of admitted limits at
     # 48 GiB / 12 resident sessions / 2 concurrent starts — raise only from
     # measured OOM/PSI data. memswap=mem: containers never touch swap.
     # cpus 2.0 is deliberate overcommit (sessions are mostly idle).
-    mem_limit: ${CC_MEM_LIMIT:-4g}
-    memswap_limit: ${CC_MEM_LIMIT:-4g}
+    mem_limit: ${CC_MEM_LIMIT:-3g}
+    memswap_limit: ${CC_MEM_LIMIT:-3g}
     pids_limit: 2048
     cpus: 2.0
     labels:

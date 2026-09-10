@@ -59,7 +59,7 @@ echo
 # takes the repo@ref reservation in ONE locked transaction, so concurrent orchestrators
 # cannot double-spawn or over-commit. Refusals print the reason and exit 2.
 # Session tokens: CC_TOKENS=vercel,railway,supabase,gcp opt-in.
-CC_MEM_LIMIT="${CC_MEM_LIMIT:-4g}"
+CC_MEM_LIMIT="${CC_MEM_LIMIT:-3g}"
 case "$CC_MEM_LIMIT" in
   [2-8]g) REQ_GB="${CC_MEM_LIMIT%g}" ;;
   *) echo "ERROR: CC_MEM_LIMIT must be 2g..8g (got '$CC_MEM_LIMIT')" >&2; exit 1 ;;

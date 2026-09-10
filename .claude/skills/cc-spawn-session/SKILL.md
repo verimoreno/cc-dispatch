@@ -30,8 +30,10 @@ per `cc-docker-host-setup`.
 - **prompt** — the task. If Veri gave a wearefractional task ID, use the
   from-task prompt template at the bottom instead of pasting the whole task in.
 - **memory & tokens** (optional, since Wave 0 hardening 2026-08-27) — prefix the
-  spawn with `CC_MEM_LIMIT=6g` for browser/build-heavy tasks (Playwright, e2e,
-  big builds); default is 4g, allowed 2g–8g. `CC_TOKENS=vercel,railway,supabase`
+  spawn with `CC_MEM_LIMIT=2g` for review/plan-only, `6g` only when the session
+  itself runs Playwright/Chromium or a full build, `8g` for known hogs; default
+  is 3g, allowed 2g–8g. Guess low — the budget sums ceilings, and a running
+  session is raised live with `docker update --memory 8g --memory-swap 8g NAME`. `CC_TOKENS=vercel,railway,supabase`
   opts the session into deploy tokens — the default env carries only
   GITHUB_TOKEN + model keys. cc-spawn now runs admission control and may REFUSE
   a spawn (fleet full: 12 resident / 48G admitted / 2 concurrent starts, or low

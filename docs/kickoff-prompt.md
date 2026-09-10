@@ -15,7 +15,7 @@ Work strictly through the skill: run the parallelize-or-not gate honestly (tell 
 if this should just be one session); decompose into work units; build the file-level
 conflict matrix by actually grepping THIS repo — no guessed file lists; define a typed
 UNBLOCKS artifact contract for every dependency edge before anything spawns; size the
-waves (≤4–5 wide, note CC_MEM_LIMIT=6g units and each unit's VERIFY class:
+waves (≤4–5 wide, note each unit's memory class 2g|3g|6g|8g and VERIFY class:
 browser|api|cli|lib); write the PLAN.md draft and one brief per session under briefs/.
 
 Then STOP: show me the plan, the conflict matrix, and your grill-checklist answers.
