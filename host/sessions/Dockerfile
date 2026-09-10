@@ -96,8 +96,12 @@ RUN pip3 install --user pip-audit
 ENV PATH=/home/pwuser/.local/bin:$PATH
 RUN uv tool install graphifyy
 
-# ---- Codex CLI (@openai/codex): pin to latest (npm ships frequent updates; late layer = fast rebuild) ----
-RUN npm install -g @openai/codex@latest
+# ---- Codex CLI (@openai/codex): late layer = fast rebuild ----
+# `@latest` in a cached layer is a lie: docker reuses it forever, so the fleet sat on the
+# version that happened to be latest the day the layer was first built (0.145, Jul 23) while
+# this line claimed otherwise. CODEX_VERSION busts the cache and records what we actually ship.
+ARG CODEX_VERSION=latest
+RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 # ---- Convenience wrappers for "skip permissions" / yolo modes ----
 USER root
