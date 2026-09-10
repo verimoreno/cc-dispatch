@@ -13,6 +13,10 @@
 # visible to every codex session, present and future. Codex refreshes the token
 # on its own; re-run this only when it reports "Not logged in" again.
 #
+# This script only handles the LOGIN. Tool policy (auto-approval, the disabled
+# destructive tools) lives in host/fleet/codex-mcp.toml.tmpl and is written by
+# host/deploy.sh — the bare table `codex mcp add` leaves behind is replaced there.
+#
 # Usage: cc-codex-mcp-login [container]   (default: first running session container)
 set -euo pipefail
 

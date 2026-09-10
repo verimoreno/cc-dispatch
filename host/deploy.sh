@@ -12,6 +12,7 @@
 #   host/sessions/*            -> /opt/cc-sessions/{docker-compose.yml,Dockerfile,
 #                                 CC-CONTAINER.md,tokens.d} (symlinks through current)
 #   host/fleet/CLAUDE.md.tmpl  -> managed region of CLAUDE.md in the cc-auth volume
+#   host/fleet/codex-mcp.toml.tmpl -> managed region of config.toml in cc-codex
 #   host/crontab.snippet       -> managed block of veri's crontab
 # NOT managed (see README.md): /opt/cc-sessions/.env, ~/.ssh, docker volumes,
 #   agent-deck config, /opt/cc-notes, /opt/cc-data.
@@ -25,8 +26,11 @@ BIN_DIR=/usr/local/bin
 SESSIONS=/opt/cc-sessions
 SPAWN_LOCK=/opt/cc-data/spawn.lock
 AUTH_VOL=cc-sessions_cc-auth
+CODEX_VOL=cc-sessions_cc-codex
 MARK_S='<!-- cc-managed:start (host/fleet/CLAUDE.md.tmpl — edit in git, deploy via host/deploy.sh) -->'
 MARK_E='<!-- cc-managed:end -->'
+CX_S='# cc-managed:start (host/fleet/codex-mcp.toml.tmpl — edit in git, deploy via host/deploy.sh)'
+CX_E='# cc-managed:end'
 CRON_S='# cc-managed:start (host/crontab.snippet — edit in git, deploy via host/deploy.sh)'
 CRON_E='# cc-managed:end'
 SESSION_FILES=(docker-compose.yml Dockerfile CC-CONTAINER.md)
@@ -38,9 +42,15 @@ note(){ echo "→ $*"; }
 xln(){ ln -sfn "$1" "$2" 2>/dev/null || sudo -n ln -sfn "$1" "$2" || die "cannot link $2"; }
 
 live_claude(){ docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat /v/CLAUDE.md' 2>/dev/null; }
+live_codex(){  docker run --rm -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat /v/config.toml' 2>/dev/null; }
 
 # strip a marker-delimited region (fixed-string match) from stdin
 strip_region(){ awk -v s="$1" -v e="$2" 'index($0,s){f=1} !f{print} index($0,e){f=0}'; }
+
+# strip a whole TOML table (its header line through the line before the next one).
+# ponytail: understands the [table] header form only — the inline form would slip
+# through as a duplicate key, which is why validate() parses the render.
+strip_table(){ awk -v h="$1" 'index($0,h)==1{f=1;next} f&&/^\[/{f=0} !f{print}'; }
 
 render_claude(){  # desired full CLAUDE.md on stdout
   { live_claude \
@@ -50,6 +60,19 @@ render_claude(){  # desired full CLAUDE.md on stdout
     echo "$MARK_S"
     cat "$HOST_DIR/fleet/CLAUDE.md.tmpl"
     echo "$MARK_E"
+  } | cat -s
+}
+
+render_codex(){  # desired full cc-codex config.toml on stdout
+  # codex rewrites this file itself (project trust, TUI state), and `codex mcp add`
+  # writes its own bare [mcp_servers.wearefractional] — strip_table drops that copy
+  # so the managed one below is the only one and the TOML stays parseable.
+  { live_codex \
+      | strip_region "$CX_S" "$CX_E" \
+      | strip_table '[mcp_servers.wearefractional]'
+    echo "$CX_S"
+    cat "$HOST_DIR/fleet/codex-mcp.toml.tmpl"
+    echo "$CX_E"
   } | cat -s
 }
 
@@ -90,6 +113,7 @@ check(){
     live_claude | strip_region "$MARK_S" "$MARK_E" | grep -ve '^[[:space:]]*$' | head -3 | sed 's/^/    | /'
     drift=1
   fi
+  diff <(live_codex) <(render_codex) >/dev/null 2>&1 || { echo "DRIFT: codex config.toml managed region"; drift=1; }
   diff <(crontab -l 2>/dev/null) <(render_cron) >/dev/null 2>&1 || { echo "DRIFT: crontab managed block"; drift=1; }
   if [[ $drift -eq 0 ]]; then echo "OK: no drift ($REPO_SHA)"; fi
   return $drift
@@ -113,6 +137,13 @@ validate(){
   grep -q 'mem_limit: "3221225472"' <<<"$cfg" || die "rendered compose default mem_limit is not 3g"
   if grep -qE 'VERCEL|RAILWAY|SUPABASE|GIP_|GCP_PROJECT|GOOGLE_CLOUD_PROJECT|GOOGLE_APPLICATION_CREDENTIALS|CLOUD_SQL|SEED_TENANT' <<<"$cfg"; then die "deploy tokens leaked into default compose"; fi
   [[ -n "$(live_claude)" ]] || die "cannot read fleet CLAUDE.md (docker/volume problem)"
+  # an empty read here would render a config.toml holding ONLY the managed region,
+  # dropping every project trust_level codex has learned
+  [[ -n "$(live_codex)" ]] || die "cannot read cc-codex config.toml (docker/volume problem)"
+  # a config.toml that does not parse is not a bad deploy, it is every codex
+  # session refusing to start — catch it here, before anything is written
+  render_codex | python3 -c 'import sys,tomllib; tomllib.loads(sys.stdin.read())' \
+    || die "rendered cc-codex config.toml is not valid TOML"
   note "validation ok"
 }
 
@@ -130,6 +161,7 @@ switch_to(){  # $1 = release dir; symlink switch under the spawn lock, then live
   xln "$CURRENT/sessions/tokens.d" "$SESSIONS/tokens.d"
   flock -u 9
   render_claude | docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/CLAUDE.md'
+  render_codex  | docker run --rm -i -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat > /v/config.toml'
   render_cron | crontab -
 }
 
@@ -173,6 +205,9 @@ rollback(){
   (smoke) || die "rolled back to $prev but smoke STILL fails — manual intervention needed"
   note "rolled back to $prev"
 }
+
+# sourced (by host/tests/test-render-codex.sh) — expose the functions, run nothing
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
 case "${1:-deploy}" in
   --check)    check ;;

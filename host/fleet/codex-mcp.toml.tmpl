@@ -1,0 +1,26 @@
+# The wearefractional MCP for the codex fleet. OAuth is done once per volume by
+# bin/cc-codex-mcp-login; this block is only policy.
+#
+# WHY default_tools_approval_mode: codex 0.145 hides MCP tools behind tool-search
+# (feature ToolSearchAlwaysDeferMcpTools) and asks before every call. A session
+# that lists its tools honestly answers "none", and `codex exec` — approval_policy
+# =never — turns the prompt into "user cancelled MCP tool call". From inside a
+# session that is indistinguishable from "the MCP is not configured". "writes"
+# would be the tighter setting, but this server sends no readOnlyHint annotations,
+# so it approves nothing; the irreversible tools are removed below instead.
+[mcp_servers.wearefractional]
+url = "https://mcp.wearefractional.ai/api/mcp"
+default_tools_approval_mode = "approve"
+disabled_tools = [
+  "deactivate_user",
+  "delete_deliverable_criterion",
+  "delete_deliverable_link",
+  "delete_opportunity",
+  "delete_opportunity_attachment",
+  "delete_project_brief",
+  "delete_subtask",
+  "delete_task",
+  "delete_task_attachment",
+  "delete_task_link",
+  "merge_contacts",
+]
