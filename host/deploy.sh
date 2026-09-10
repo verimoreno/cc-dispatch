@@ -110,7 +110,7 @@ validate(){
         docker compose -f "$HOST_DIR/sessions/docker-compose.yml" config 2>/dev/null) \
     || die "docker compose config failed"
   grep -q 'com.fractional.cc-fleet' <<<"$cfg" || die "rendered compose lacks fleet label"
-  grep -q 'mem_limit: "4294967296"' <<<"$cfg" || die "rendered compose default mem_limit is not 4g"
+  grep -q 'mem_limit: "3221225472"' <<<"$cfg" || die "rendered compose default mem_limit is not 3g"
   if grep -qE 'VERCEL|RAILWAY|SUPABASE|GIP_|GCP_PROJECT|GOOGLE_CLOUD_PROJECT|GOOGLE_APPLICATION_CREDENTIALS|CLOUD_SQL|SEED_TENANT' <<<"$cfg"; then die "deploy tokens leaked into default compose"; fi
   [[ -n "$(live_claude)" ]] || die "cannot read fleet CLAUDE.md (docker/volume problem)"
   note "validation ok"
