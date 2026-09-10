@@ -56,9 +56,14 @@ them mid-session, or run different sessions on different agents via agent-deck.
 
 ## Resource limits
 
-- 8 GB RAM hard cap per container
-- 2 vCPU
-- Host: Ryzen 9 3900, 128 GB → ~12 parallel sessions max
+- RAM: a hard cap set at spawn — 3 GB default, 2/6/8 GB by task class. Check
+  yours: `cat /sys/fs/cgroup/memory.max`.
+- 2 vCPU · host is 62 GB → ~12 parallel sessions.
+- **Hitting the cap**: a process killed with exit 137, or `oom_kill` > 0 in
+  `/sys/fs/cgroup/memory.events`, means the *build/test* was OOM-killed at your
+  ceiling — not a code bug. You cannot raise it from inside (no docker socket).
+  Say so once — in your status / HANDOFF: "OOM at N GB, need M GB" — and stop
+  retrying that command; the supervisor resizes you live with no restart.
 
 ## Playwright on this host
 
