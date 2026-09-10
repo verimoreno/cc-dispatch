@@ -569,7 +569,7 @@ let allRepos = [];
 let selectedRepo = null; // { name, owner, full_name, default_branch }
 let agentsLoaded = false;
 
-async function openModal() {
+function openModal() {
   document.getElementById('modal-backdrop').classList.add('open');
   document.getElementById('new-repo').value = '';
   document.getElementById('new-branch').value = '';
@@ -578,19 +578,26 @@ async function openModal() {
   selectedRepo = null;
   setTimeout(() => document.getElementById('new-repo').focus(), 50);
 
-  if (!allRepos.length) {
-    try {
-      allRepos = await fetch('/api/github/repos').then(r => r.json());
-    } catch(e) { /* gh not available, manual input still works */ }
-  }
-
+  // Both loads are independent and neither may block the other: /api/github/repos
+  // shells out to `gh` and takes seconds, and awaiting it first left the agent
+  // <select> stuck on its single hardcoded claude option for that whole window.
   if (!agentsLoaded) {
-    try {
-      const agents = await fetch('/api/agents').then(r => r.json());
+    fetch('/api/agents').then(r => r.json()).then(agents => {
       document.getElementById('new-agent').innerHTML = Object.entries(agents)
         .map(([kind, cmd]) => `<option value="${kind}">${kind} (${cmd})</option>`).join('');
       agentsLoaded = true;
-    } catch(e) { /* keep the hardcoded claude option */ }
+    }).catch(() => { /* keep the hardcoded claude option */ });
+  }
+
+  if (!allRepos.length) {
+    fetch('/api/github/repos').then(r => r.json()).then(repos => {
+      allRepos = repos;
+      // The user may already be typing by the time gh answers — re-run the filter,
+      // but only while the repo box still has focus: filterRepos() force-opens the
+      // dropdown, which would otherwise pop over BRANCH/AGENT under the cursor.
+      const inp = document.getElementById('new-repo');
+      if (document.activeElement === inp) filterRepos(inp.value);
+    }).catch(() => { /* gh not available, manual input still works */ });
   }
 }
 
