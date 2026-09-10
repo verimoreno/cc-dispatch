@@ -14,7 +14,7 @@ error refuses admission.
   cc-ledger show KEY_OR_SESSION
 
 States: requested -> starting -> running -> stopping -> done | failed | abandoned
-Budgets (env-overridable): CC_ADMIT_GB=48 CC_MAX_SESSIONS=12 CC_MAX_STARTS=2
+Budgets (env-overridable): CC_ADMIT_GB=56 CC_MAX_SESSIONS=12 CC_MAX_STARTS=2
 """
 import argparse, fcntl, hashlib, json, os, subprocess, sys, time, uuid
 
@@ -134,7 +134,7 @@ class locked:
         fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
 
 def admit(a):
-    admit_gb = int(os.environ.get("CC_ADMIT_GB", 48))
+    admit_gb = int(os.environ.get("CC_ADMIT_GB", 56))
     max_sessions = int(os.environ.get("CC_MAX_SESSIONS", 12))
     max_starts = int(os.environ.get("CC_MAX_STARTS", 2))
     req = a.mem
