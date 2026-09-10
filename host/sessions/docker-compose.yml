@@ -5,6 +5,9 @@ services:
       args:
         USER_UID: 1000
         USER_GID: 1000
+        # bump to upgrade the fleet's codex; rebuilding does NOT touch running
+        # containers (they hold the old image by id), only future spawns
+        CODEX_VERSION: ${CODEX_VERSION:-0.154.0}
     image: cc-session:latest
     container_name: ${SESSION_NAME:-cc-default}
     hostname: ${SESSION_NAME:-cc-default}
