@@ -32,6 +32,7 @@ drift detector — run it when something on the host behaves unexpectedly.
 - `/opt/cc-sessions/.env` — secrets; keys listed in `sessions/env.template`
 - `~/.ssh`, `~/.gitconfig` — host identity
 - docker named volumes (`cc-sessions_cc-*`) — login/auth state; created by first run
+  (incl. the codex MCP login in `cc-codex` — `bin/cc-codex-mcp-login`, run once)
 - agent-deck install + `~/.agent-deck/config.toml`
 - `/opt/cc-notes` (plan store; mirrored to github.com/verimoreno/cc-notes) and `/opt/cc-data`
 - docker engine, tmux, agent-deck binaries

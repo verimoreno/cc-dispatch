@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# cc-codex-mcp-login — log the codex fleet into the wearefractional MCP, headlessly.
+#
+# WHY THIS EXISTS: `codex mcp login` wants a browser. It binds a callback listener
+# on 127.0.0.1 INSIDE the container, so no port-forward from the laptop can reach
+# it, and its ~2-minute deadline expires while you wait for the OTP email anyway.
+# This drives the same OAuth flow with curl: the authorize endpoint is a plain
+# email -> 6-digit-OTP form, and the final 302 is replayed with `docker exec curl`
+# so the code lands in the container's own listener.
+#
+# Runs ONCE for the whole fleet: ~/.codex is the shared cc-codex volume, so both
+# the server entry (config.toml) and the credentials (.credentials.json) are
+# visible to every codex session, present and future. Codex refreshes the token
+# on its own; re-run this only when it reports "Not logged in" again.
+#
+# Usage: cc-codex-mcp-login [container]   (default: first running session container)
+set -euo pipefail
+
+MCP_URL="${WF_MCP_URL:-https://mcp.wearefractional.ai/api/mcp}"
+AUTH_URL="${WF_AUTH_URL:-https://mcp.wearefractional.ai/api/oauth/authorize}"
+EMAIL="${WF_EMAIL:-veri@wearefractional.ai}"
+NAME=wearefractional
+
+CONTAINER="${1:-$(docker ps --format '{{.Names}}' | head -1)}"
+[ -n "$CONTAINER" ] || { echo "ERROR: no running session container" >&2; exit 1; }
+echo "→ using container: $CONTAINER"
+
+if docker exec "$CONTAINER" bash -lc "grep -q 'mcp_servers.$NAME' ~/.codex/config.toml" 2>/dev/null; then
+  START="codex mcp login $NAME"
+else
+  START="codex mcp add $NAME --url $MCP_URL"   # `add` starts the OAuth flow itself
+fi
+
+LOG=/tmp/cc-codex-mcp-login.log
+docker exec -d "$CONTAINER" bash -lc "$START > $LOG 2>&1"
+
+# The listener is up before the URL is flushed; poll rather than guess a sleep.
+for _ in $(seq 20); do
+  URL=$(docker exec "$CONTAINER" grep -o "${AUTH_URL}[^ ]*" "$LOG" 2>/dev/null | head -1) && [ -n "$URL" ] && break
+  sleep 1
+done
+[ -n "${URL:-}" ] || { echo "ERROR: codex never printed an authorize URL:" >&2
+                       docker exec "$CONTAINER" cat "$LOG" >&2; exit 1; }
+
+# Replay the client's own OAuth params on every POST — the server round-trips them
+# through hidden form fields, and /token later re-checks redirect_uri exactly.
+mapfile -t ARGS < <(python3 - "$URL" <<'PY'
+import sys
+from urllib.parse import urlparse, parse_qs
+q = parse_qs(urlparse(sys.argv[1]).query)
+for k in ("client_id","redirect_uri","response_type","code_challenge","code_challenge_method","state","scope"):
+    if k in q:
+        print("--data-urlencode"); print(f"{k}={q[k][0]}")
+PY
+)
+
+curl -sS -X POST "$AUTH_URL" --data-urlencode "step=send" --data-urlencode "email=$EMAIL" \
+  "${ARGS[@]}" | grep -q "Insere o código" \
+  || { echo "ERROR: the server did not send an OTP to $EMAIL" >&2; exit 1; }
+echo "→ 6-digit code sent to $EMAIL"
+
+read -rp "code: " OTP
+CB=$(curl -sS -o /tmp/cc-codex-mcp-verify.html -w '%{redirect_url}' -X POST "$AUTH_URL" \
+       --data-urlencode "step=verify" --data-urlencode "email=$EMAIL" \
+       --data-urlencode "otp=$OTP" "${ARGS[@]}")
+[ -n "$CB" ] || { echo "ERROR: code rejected:" >&2
+                  grep -oE "Código incorreto[^<]*" /tmp/cc-codex-mcp-verify.html >&2 || true; exit 1; }
+
+# 127.0.0.1 here is the container's loopback, not the host's — replay it inside.
+docker exec "$CONTAINER" curl -sS -o /dev/null "$CB"
+sleep 3
+docker exec "$CONTAINER" bash -lc "codex mcp list" | grep "$NAME"

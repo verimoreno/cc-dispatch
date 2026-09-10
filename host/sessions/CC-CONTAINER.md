@@ -37,6 +37,8 @@ Shared via Docker volumes and env vars:
 - **Codex CLI auth:** `cc-codex` volume → `~/.codex/`
 - **Gemini CLI auth:** `cc-gemini` volume → `~/.gemini/`
 - **MCP config (Claude):** same `cc-auth` volume (configured ONCE during bootstrap)
+- **MCP config (Codex):** `cc-codex` volume → `~/.codex/config.toml` + `.credentials.json`
+  (the `wearefractional` MCP; log in once with `cc-codex-mcp-login`)
 - **Service tokens:** env vars (SUPABASE_ACCESS_TOKEN, VERCEL_TOKEN, RAILWAY_TOKEN, GITHUB_TOKEN, GH_TOKEN)
 - **Optional API-key auth:** OPENAI_API_KEY, GEMINI_API_KEY env vars (alternative to interactive login)
 - **Git SSH:** mounted from host
