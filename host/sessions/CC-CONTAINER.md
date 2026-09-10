@@ -38,7 +38,12 @@ Shared via Docker volumes and env vars:
 - **Gemini CLI auth:** `cc-gemini` volume → `~/.gemini/`
 - **MCP config (Claude):** same `cc-auth` volume (configured ONCE during bootstrap)
 - **MCP config (Codex):** `cc-codex` volume → `~/.codex/config.toml` + `.credentials.json`
-  (the `wearefractional` MCP; log in once with `cc-codex-mcp-login`)
+  (the `wearefractional` MCP; log in once with `cc-codex-mcp-login`, policy from
+  `host/fleet/codex-mcp.toml.tmpl`). Codex hides MCP tools behind **tool-search**:
+  ask a session to list its tools and it says "none" — it has to search for them
+  by name (`get_my_workload`, `list_tasks`, …). That is not a missing MCP.
+  `codex mcp list` is the real check. The server exposes no MCP *resources*, so
+  `list_mcp_resources` never shows it either.
 - **Service tokens:** env vars (SUPABASE_ACCESS_TOKEN, VERCEL_TOKEN, RAILWAY_TOKEN, GITHUB_TOKEN, GH_TOKEN)
 - **Optional API-key auth:** OPENAI_API_KEY, GEMINI_API_KEY env vars (alternative to interactive login)
 - **Git SSH:** mounted from host
