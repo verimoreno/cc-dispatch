@@ -186,8 +186,36 @@ class ResolveReleases(unittest.TestCase):
     def test_from_restricts_source_and_self_never_matches(self):
         a = sess("a", "done", unblocks=[self.claim("api", verified=True)])
         b = sess("b", "blocked", unblocks=[self.claim("api", verified=True)], waits=[{"name": "api", "from": "c"}])
-        rel = ccplan.resolve_releases([a, b], verify=True, contradictions=[])
+        c = sess("c", "working")
+        rel = ccplan.resolve_releases([a, b, c], verify=True, contradictions=[])
         self.assertEqual(rel, []); self.assertEqual(b["waits"][0]["resolution"], "open")
+
+    def test_wait_on_a_human_is_an_ask_not_an_open_wait(self):
+        """Nothing in the plan can produce it, so it must never look pending."""
+        a = sess("a", "done", unblocks=[self.claim("api", verified=True)])
+        b = sess("b", "blocked", waits=[{"name": "which-db", "from": "orchestrator"}])
+        errs = []
+        rel = ccplan.resolve_releases([a, b], verify=True, contradictions=[], errors=errs)
+        self.assertEqual(rel, []); self.assertIsNone(b["release"])
+        self.assertEqual(b["waits"][0]["resolution"], "ask")
+        self.assertEqual(errs, [])                       # a named human is not a typo
+        asks = ccplan.collect_asks([a, b])
+        self.assertEqual([(x["session"], x["kind"], x["name"]) for x in asks],
+                         [("b", "wait", "which-db")])
+
+    def test_wait_on_an_unknown_session_is_an_ask_and_a_parser_error(self):
+        b = sess("b", "blocked", waits=[{"name": "api", "from": "typoo"}])
+        errs = []
+        ccplan.resolve_releases([b], verify=True, contradictions=[], errors=errs)
+        self.assertEqual(b["waits"][0]["resolution"], "ask")
+        self.assertEqual(len(errs), 1); self.assertIn("typoo", errs[0])
+
+    def test_contradictions_sort_worst_and_oldest_first(self):
+        cs = [{"kind": "done-unverified", "session": "x"},
+              {"kind": "blocked-untyped", "session": "y", "age_min": 10},
+              {"kind": "blocked-untyped", "session": "z", "age_min": 20000},
+              {"kind": "silent", "session": "w", "age_min": 30}]
+        self.assertEqual([c["session"] for c in ccplan.sort_contradictions(cs)], ["w", "z", "y", "x"])
 
     def test_planned_row_ready_when_deps_done_and_verified(self):
         a = sess("a", "done", unblocks=[self.claim("api", verified=True)])
@@ -258,6 +286,41 @@ class InitPlan(unittest.TestCase):
                 with self.assertRaises(ValueError): ccplan.init_plan("Bad_Id")
             finally:
                 ccplan.NOTES_ROOT = old
+
+
+class Pulse(unittest.TestCase):
+    """The hook-written heartbeat — the mid-run signal notes cannot give."""
+
+    def write(self, tmp, name, lines):
+        os.makedirs(os.path.join(tmp, ".pulse"), exist_ok=True)
+        with open(os.path.join(tmp, ".pulse", f"{name}.jsonl"), "w") as f:
+            f.write("".join(l + "\n" for l in lines))
+
+    def test_tail_torn_lines_and_dialog_detection(self):
+        import json, tempfile
+        now = 1_000_000
+        with tempfile.TemporaryDirectory() as tmp:
+            old = ccplan.PULSE_DIR; ccplan.PULSE_DIR = os.path.join(tmp, ".pulse")
+            try:
+                self.assertIsNone(ccplan.read_pulse("nobody", now))
+                self.write(tmp, "a", [
+                    '{"ts": 999000, "ev": "PostToolUse", "tool": "Bash", "t": "pnpm test"}',
+                    'not json at all',                      # rotate race: survivable
+                    json.dumps({"ts": now - 120, "ev": "PostToolUse", "tool": "Edit", "t": "src/x.ts"}),
+                ])
+                p = ccplan.read_pulse("a", now)
+                self.assertEqual((p["age_min"], p["events"], p["ask"]), (2, 2, None))
+                self.assertEqual(p["recent"][-1]["tool"], "Edit")
+                # a Notification with nothing after it = sitting on a dialog
+                self.write(tmp, "b", [json.dumps({"ts": now - 60, "ev": "PostToolUse", "tool": "Bash", "t": "ls"}),
+                                      json.dumps({"ts": now - 30, "ev": "Notification", "t": "needs permission"})])
+                self.assertEqual(ccplan.read_pulse("b", now)["ask"], "needs permission")
+                # ... but a tool call after it means the agent moved on
+                self.write(tmp, "c", [json.dumps({"ts": now - 60, "ev": "Notification", "t": "needs permission"}),
+                                      json.dumps({"ts": now - 30, "ev": "PostToolUse", "tool": "Bash", "t": "ls"})])
+                self.assertIsNone(ccplan.read_pulse("c", now)["ask"])
+            finally:
+                ccplan.PULSE_DIR = old
 
 
 class ReviewRegressions(unittest.TestCase):

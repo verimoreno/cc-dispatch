@@ -23,6 +23,16 @@ that releases nothing):
   HANDOFF:                              <= 12 lines a downstream session must know; ends at a
   <lines>                               blank line, a heading, or another keyword line
 
+Beyond the notes, every session carries the signals a note cannot give:
+  pulse            hook-written tool-call feed (/opt/cc-notes/.pulse/<session>.jsonl)
+                   — costs the lane no context; `recent` is what it is doing NOW
+  pane_idle_min    tmux last-output age; `silent` = neither moved while resident
+  unblocks[].checks  GitHub check-runs for the claimed head SHA — "CI green" in the
+                   prose is a claim, this is the fact (needs --verify)
+  asks[]           WAITS nothing in the plan can produce (from=orchestrator|veri|human),
+                   blocked-untyped entries, and lanes caught at a dialog: the queue only
+                   a human can clear, answered with `cc-launch <session> --prompt`
+
 Malformed input is reported as parser_errors — never silently inferred green.
 """
 import argparse, calendar, json, os, re, subprocess, sys, time
@@ -31,6 +41,16 @@ NOTES_ROOT = os.environ.get("CC_NOTES_ROOT", "/opt/cc-notes")
 BASE_DIR = os.environ.get("CC_BASE_DIR", os.path.expanduser("~/Fractional"))
 LEDGER = "/opt/cc-data/ledger"
 STALE_MIN = 120
+# Notes are written every ~30min (median across the store), p90 85min — so note
+# age alone can only ever spot a corpse. The pulse and the pane are the live
+# signals; a lane that has emitted neither for this long is the one to look at.
+SILENT_MIN = 20
+PULSE_DIR = os.path.join(NOTES_ROOT, ".pulse")
+PULSE_TAIL_BYTES = 16384
+PULSE_RECENT = 3
+# a WAITS whose from= names one of these wants a HUMAN answer, not a sibling's
+# artifact — it can never be matched against an UNBLOCKS, so it is an ask
+HUMANS = {"orchestrator", "veri", "human", "you", "me"}
 
 RE_ENTRY = re.compile(r"^## +(\d{4}-\d{2}-\d{2}T[0-9:]+Z?)\s*$")
 RE_STATUS = re.compile(r"^STATUS: *(working|done|blocked)\s*$")
@@ -213,7 +233,68 @@ def verify_claim(c):
     if head != c["sha"]:
         return False, f"PR head is {head[:8]}, claim says {c['sha'][:8]} (force-push or stale claim)"
     state = pr.get("state"); merged = pr.get("merged", False)
-    return True, f"PR head matches; state={state} merged={merged}"
+    checks = check_runs(c["repo"], c["sha"], tok)
+    c["checks"] = checks
+    return True, f"PR head matches; state={state} merged={merged} checks={checks}"
+
+
+def check_runs(repo, sha, tok):
+    """-> pass | fail | pending | none | unknown. A note saying "CI green" is a
+    claim; this is the fact. Red CI does NOT refute the artifact (the PR exists),
+    it is a merge decision — project() raises it as its own contradiction."""
+    out = sh(["curl", "-s", "-H", f"Authorization: token {tok}",
+              f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs?per_page=100"], timeout=20)
+    if out is None: return "unknown"
+    try: runs = json.loads(out).get("check_runs") or []
+    except (json.JSONDecodeError, AttributeError): return "unknown"
+    if not runs: return "none"
+    if any(r.get("status") != "completed" for r in runs): return "pending"
+    if any(r.get("conclusion") not in ("success", "neutral", "skipped") for r in runs): return "fail"
+    return "pass"
+
+def read_pulse(name, now):
+    """Hook-written heartbeat for one session (see host/fleet/pulse-hook.py).
+    Costs the lane nothing — hooks run outside the model's context."""
+    path = os.path.join(PULSE_DIR, f"{name}.jsonl")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            start = max(0, f.tell() - PULSE_TAIL_BYTES)
+            f.seek(start)
+            lines = f.read().decode("utf-8", "replace").splitlines()
+            if start: lines = lines[1:]   # seeked into the middle of a line
+    except OSError:
+        return None
+    recs = []
+    for ln in lines:
+        try:
+            r = json.loads(ln)
+        except json.JSONDecodeError:
+            continue                      # a torn line from the rotate race
+        if isinstance(r, dict) and isinstance(r.get("ts"), int): recs.append(r)
+    if not recs: return None
+    last = recs[-1]
+    # a Notification with no tool call after it = the agent is sitting on a
+    # dialog waiting for a human — the failure mode lanes were told not to have
+    ask = last if last.get("ev") == "Notification" else None
+    return {"last_ts": last["ts"], "age_min": round((now - last["ts"]) / 60),
+            "events": len(recs), "ask": (ask or {}).get("t") or None,
+            "recent": [{"ev": r.get("ev"), "tool": r.get("tool"), "t": r.get("t"),
+                        "age_min": round((now - r["ts"]) / 60)}
+                       for r in recs[-PULSE_RECENT:]]}
+
+
+def tmux_activity():
+    """tmux session -> last output epoch. One call for the whole fleet; the
+    cheapest liveness signal on the host (no capture-pane, no docker exec)."""
+    out = sh(["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"])
+    act = {}
+    for ln in (out or "").splitlines():
+        sess, _, ts = ln.partition(" ")
+        try: act[sess] = int(ts)
+        except ValueError: pass
+    return act
+
 
 def ledger_by_session():
     out = {}
@@ -248,6 +329,7 @@ def project(plan_id, verify=False):
         errors.append("agent-deck ls unparseable")
     ledger = ledger_by_session()
     now = time.time()
+    tmux = tmux_activity()
     sessions = []
     for row in plan["roster"]:
         name = row["session"]
@@ -256,10 +338,16 @@ def project(plan_id, verify=False):
              "latest_status": None, "latest_time": None, "note_age_min": None,
              "unblocks": [], "legacy_unblocks": [], "waits": [], "legacy_waits": [],
              "handoff": None, "latest_prose": [], "release": None, "note_errors": 0, "ledger_state": None,
-             "container": None, "in_deck": None, "state": "unknown"}
+             "container": None, "in_deck": None, "state": "unknown",
+             "pulse": None, "pane_idle_min": None}
         if s["planned"]:
             s["state"] = "waiting-to-spawn"; sessions.append(s); continue
-        s["ledger_state"] = (ledger.get(name) or {}).get("state")
+        led = ledger.get(name) or {}
+        s["ledger_state"] = led.get("state")
+        s["pulse"] = read_pulse(name, now)
+        tsess = led.get("tmux") or next((t for t in tmux if t.startswith(f"agentdeck_{name}_")), "")
+        if (act := tmux.get(tsess)):
+            s["pane_idle_min"] = round((now - act) / 60)
         s["container"] = containers.get(name)
         s["in_deck"] = name in deck
         npath = os.path.join(pdir, "notes", f"{name}.md")
@@ -294,8 +382,19 @@ def project(plan_id, verify=False):
             contradictions.append({"session": name, "kind": "working-but-no-container",
                                    "detail": f"latest STATUS working, container: {s['container'] or 'absent'}"})
         if st == "working" and s["note_age_min"] and s["note_age_min"] > STALE_MIN:
-            contradictions.append({"session": name, "kind": "stale-notes",
+            contradictions.append({"session": name, "kind": "stale-notes", "age_min": s["note_age_min"],
                                    "detail": f"working but last note {s['note_age_min']}min ago"})
+        # the mid-run signal notes cannot give: pulse (hook) or pane (tmux), whichever
+        # is fresher. Silence in BOTH while nominally working is the real "look at me".
+        live = [v for v in ((s["pulse"] or {}).get("age_min"), s["pane_idle_min"]) if v is not None]
+        if st in ("working", "blocked") and running and live and min(live) > SILENT_MIN:
+            contradictions.append({"session": name, "kind": "silent", "age_min": min(live),
+                                   "detail": f"{st}, container up, but no tool call or pane output "
+                                             f"for {min(live)}min — stuck, rate-limited, or at a dialog"})
+        if (ask := (s["pulse"] or {}).get("ask")):
+            contradictions.append({"session": name, "kind": "pending-ask",
+                                   "age_min": (s["pulse"] or {}).get("age_min"),
+                                   "detail": f"agent is waiting at a dialog, not in its note: {ask[:120]}"})
         if st == "done" and running:
             contradictions.append({"session": name, "kind": "done-but-resident",
                                    "detail": f"finished but container still resident (a counted "
@@ -305,8 +404,8 @@ def project(plan_id, verify=False):
                                    "detail": "STATUS done with no typed UNBLOCKS evidence"
                                              + (" (legacy claims only)" if s["legacy_unblocks"] else "")})
         if st == "blocked" and not s["waits"]:
-            contradictions.append({"session": name, "kind": "blocked-untyped",
-                                   "detail": "STATUS blocked with no typed WAITS line — cannot be auto-released"
+            contradictions.append({"session": name, "kind": "blocked-untyped", "age_min": s["note_age_min"],
+                                   "detail": "STATUS blocked with no typed WAITS line — needs a human"
                                              + (" (legacy WAITS only)" if s["legacy_waits"] else "")})
         if verify:
             for c in s["unblocks"]:
@@ -315,12 +414,50 @@ def project(plan_id, verify=False):
                 if ok is False:
                     contradictions.append({"session": name, "kind": "evidence-failed",
                                            "detail": f"{c['name']}: {reason}"})
+                # "CI green" in the prose is a claim; check-runs is the fact
+                elif ok and c.get("checks") in ("fail", "pending"):
+                    contradictions.append({"session": name, "kind": f"checks-{c['checks']}",
+                                           "detail": f"{c['name']}: PR #{c.get('number')} checks "
+                                                     f"{c['checks']} — do not merge on the note alone"})
         sessions.append(s)
     releases = resolve_releases(sessions, verify, contradictions, errors)
     return {"schema": 1, "plan": plan_id, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "status": plan["status"], "goal": plan["goal"], "orchestrator": plan["orchestrator"],
             "sessions": sessions, "assignments": plan["assignments"], "releases": releases,
-            "contradictions": contradictions, "parser_errors": errors}
+            "asks": collect_asks(sessions), "contradictions": sort_contradictions(contradictions),
+            "parser_errors": errors}
+
+
+CONTRA_RANK = {"pending-ask": 0, "silent": 1, "evidence-failed": 2, "checks-fail": 3,
+               "blocked-untyped": 4, "working-but-no-container": 5, "stale-notes": 6,
+               "waits-refuted": 7, "checks-pending": 8, "done-but-resident": 9, "done-unverified": 10}
+
+
+def sort_contradictions(cs):
+    """Worst first, oldest first within a kind. A 14-day-old dead lane and a
+    5-minute-old one used to render identically in a list of eleven."""
+    return sorted(cs, key=lambda c: (CONTRA_RANK.get(c["kind"], 5), -(c.get("age_min") or 0)))
+
+
+def collect_asks(sessions):
+    """Everything blocked on a HUMAN — a typed WAITS nothing in the plan can
+    produce, or a blocked entry with no typed WAITS at all. This is the queue to
+    answer with `cc-launch <session> --prompt`; nothing here ever auto-releases."""
+    asks = []
+    for s in sessions:
+        for w in s.get("waits", []):
+            if w.get("resolution") == "ask":
+                asks.append({"session": s["name"], "kind": "wait", "name": w["name"],
+                             "from": w["from"], "age_min": s.get("note_age_min"),
+                             "prose": s.get("latest_prose", [])[:6]})
+        if s.get("latest_status") == "blocked" and not s.get("waits"):
+            asks.append({"session": s["name"], "kind": "untyped", "name": None,
+                         "from": None, "age_min": s.get("note_age_min"),
+                         "prose": s.get("latest_prose", [])[:6]})
+        if (ask := (s.get("pulse") or {}).get("ask")):
+            asks.append({"session": s["name"], "kind": "dialog", "name": None, "from": None,
+                         "age_min": (s["pulse"] or {}).get("age_min"), "prose": [ask]})
+    return sorted(asks, key=lambda a: -(a["age_min"] or 0))
 
 NO_DEPS = {"", "—", "-", "–", "none", "(none)", "n/a", "na", "nil", "null"}
 
@@ -367,6 +504,16 @@ def resolve_releases(sessions, verify, contradictions, errors=None):
         for w in s["waits"]:
             match = [(who, c) for who, c in claims
                      if c["name"] == w["name"] and (w["from"] == "any" or who == w["from"]) and who != s["name"]]
+            if w["from"] != "any" and w["from"] not in by_name:
+                # nothing in the plan can ever produce this: the lane is asking a
+                # HUMAN through its note, exactly as the protocol tells it to. Before
+                # this it resolved "open" forever and looked like a pending artifact —
+                # which is why lanes gave up and asked through a pane dialog instead.
+                w["resolution"] = "ask"
+                if w["from"] not in HUMANS:
+                    errors.append(f"{s['name']}: WAITS {w['name']} from={w['from']!r} names no roster "
+                                  f"session — treated as a human ask (typo?)")
+                continue
             if not match:
                 w["resolution"] = "open"; continue
             best = None

@@ -13,6 +13,8 @@
 #                                 CC-CONTAINER.md,tokens.d} (symlinks through current)
 #   host/fleet/CLAUDE.md.tmpl  -> managed region of CLAUDE.md in the cc-auth volume
 #   host/fleet/codex-mcp.toml.tmpl -> managed region of config.toml in cc-codex
+#   host/fleet/settings.hooks.json -> "hooks" key of settings.json in cc-auth
+#   host/fleet/pulse-hook.py   -> /home/pwuser/.claude/cc-pulse in cc-auth (+x)
 #   host/crontab.snippet       -> managed block of veri's crontab
 # NOT managed (see README.md): /opt/cc-sessions/.env, ~/.ssh, docker volumes,
 #   agent-deck config, /opt/cc-notes, /opt/cc-data.
@@ -43,6 +45,8 @@ xln(){ ln -sfn "$1" "$2" 2>/dev/null || sudo -n ln -sfn "$1" "$2" || die "cannot
 
 live_claude(){ docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat /v/CLAUDE.md' 2>/dev/null; }
 live_codex(){  docker run --rm -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat /v/config.toml' 2>/dev/null; }
+live_settings(){ docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat /v/settings.json' 2>/dev/null; }
+live_pulse(){  docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat /v/cc-pulse' 2>/dev/null; }
 
 # strip a marker-delimited region (fixed-string match) from stdin
 strip_region(){ awk -v s="$1" -v e="$2" 'index($0,s){f=1} !f{print} index($0,e){f=0}'; }
@@ -74,6 +78,16 @@ render_codex(){  # desired full cc-codex config.toml on stdout
     cat "$HOST_DIR/fleet/codex-mcp.toml.tmpl"
     echo "$CX_E"
   } | cat -s
+}
+
+render_settings(){  # desired full fleet settings.json on stdout — ONE managed key
+  # settings.json is the fleet's own (model, plugins, theme): own the "hooks" key
+  # and nothing else, the same posture as the CLAUDE.md managed region.
+  live_settings | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+s["hooks"] = json.load(open(sys.argv[1]))
+print(json.dumps(s, indent=2))' "$HOST_DIR/fleet/settings.hooks.json"
 }
 
 render_cron(){  # desired full crontab on stdout
@@ -114,6 +128,8 @@ check(){
     drift=1
   fi
   diff <(live_codex) <(render_codex) >/dev/null 2>&1 || { echo "DRIFT: codex config.toml managed region"; drift=1; }
+  diff <(live_settings) <(render_settings) >/dev/null 2>&1 || { echo "DRIFT: fleet settings.json hooks key"; drift=1; }
+  diff <(live_pulse) "$HOST_DIR/fleet/pulse-hook.py" >/dev/null 2>&1 || { echo "DRIFT: fleet cc-pulse hook"; drift=1; }
   diff <(crontab -l 2>/dev/null) <(render_cron) >/dev/null 2>&1 || { echo "DRIFT: crontab managed block"; drift=1; }
   if [[ $drift -eq 0 ]]; then echo "OK: no drift ($REPO_SHA)"; fi
   return $drift
@@ -144,6 +160,12 @@ validate(){
   # session refusing to start — catch it here, before anything is written
   render_codex | python3 -c 'import sys,tomllib; tomllib.loads(sys.stdin.read())' \
     || die "rendered cc-codex config.toml is not valid TOML"
+  # a settings.json that does not parse is every lane starting without its config
+  [[ -n "$(live_settings)" ]] || die "cannot read fleet settings.json (docker/volume problem)"
+  render_settings | python3 -c 'import json,sys; json.load(sys.stdin)' \
+    || die "rendered fleet settings.json is not valid JSON"
+  python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$HOST_DIR/fleet/pulse-hook.py" \
+    || die "syntax: fleet/pulse-hook.py"
   note "validation ok"
 }
 
@@ -164,11 +186,22 @@ switch_to(){  # $1 = release dir; symlink switch under the spawn lock, then live
   # reads and truncates the same file: the shell starts both sides at once, the
   # writer truncates, and the reader inside render_x gets an empty file. That
   # wiped every project trust_level out of the codex config.toml once already.
-  local claude_md codex_toml
+  local claude_md codex_toml settings_json
   claude_md=$(render_claude); [[ -n "$claude_md" ]] || die "render_claude produced nothing"
   codex_toml=$(render_codex); [[ -n "$codex_toml" ]] || die "render_codex produced nothing"
+  settings_json=$(render_settings); [[ -n "$settings_json" ]] || die "render_settings produced nothing"
   printf '%s\n' "$claude_md" | docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/CLAUDE.md'
   printf '%s\n' "$codex_toml" | docker run --rm -i -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat > /v/config.toml'
+  printf '%s\n' "$settings_json" | docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/settings.json'
+  # a rollback target from before the hook existed has no fleet/ — leave the
+  # live hook alone rather than failing the switch
+  if [[ -f "$rel/fleet/pulse-hook.py" ]]; then
+    docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/cc-pulse && chmod 755 /v/cc-pulse' \
+      < "$rel/fleet/pulse-hook.py"
+  fi
+  # the pulse lands in the notes store (the only mount every lane shares); it is a
+  # per-tool-call feed, so keep it out of the store's hourly auto-commit
+  grep -qxF '.pulse/' /opt/cc-notes/.gitignore 2>/dev/null || echo '.pulse/' >> /opt/cc-notes/.gitignore
   render_cron | crontab -
 }
 
@@ -189,7 +222,7 @@ deploy(){
   validate
   local rel="$RELEASES/$(date +%Y%m%d-%H%M%S)-$REPO_SHA"
   mkdir -p "$rel"
-  cp -r "$HOST_DIR/bin" "$HOST_DIR/sessions" "$rel/"
+  cp -r "$HOST_DIR/bin" "$HOST_DIR/sessions" "$HOST_DIR/fleet" "$rel/"
   chmod +x "$rel"/bin/*
   local prev=""; [[ -L "$CURRENT" ]] && prev=$(readlink -f "$CURRENT")
   switch_to "$rel"

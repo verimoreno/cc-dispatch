@@ -39,6 +39,12 @@ filter to those. Otherwise supervise all of them.
 
 ### 2. Per session, gather three reads (do them in parallel across sessions)
 
+**Plan members: check `cc-plan json <plan>` first.** It already carries `pulse`
+(the hook-written tool-call feed — what the lane is doing right now), `pane_idle_min`,
+`asks[]` and, with `--verify`, per-claim `checks`. One SSH call for the whole plan
+beats a capture-pane per session; fall through to the reads below for anything it
+does not answer, and for sessions that belong to no plan.
+
 **a. Pane — what is it doing right now**
 ```bash
 ssh cc-host 'tmux capture-pane -p -t <tmux_session> | tail -25'
