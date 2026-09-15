@@ -24,6 +24,13 @@ exists to avoid:
     a long lane would accumulate them;
   - what no design can bound: uninterruptible kernel I/O, and external termination
     (the `|| true` in the hook command is the contract boundary the shell sees).
+
+Durability is best-effort by design, and the deadline is part of that: `_exit`
+skips the buffer flush, so a record cut short can leave an unterminated line —
+which costs that record AND the next append that joins onto it. cc-plan's reader
+skips unparseable lines, so the damage stops there; nothing in the artifact or
+release layer reads this file. A dropped pulse is a missing progress line, never
+a wrong answer about a lane.
 """
 import fcntl, json, os, signal, sys, time
 

@@ -4,8 +4,9 @@
 # the things that can hurt (speaking, hanging, losing a record to a concurrent
 # rotation) only show up across processes.
 #
-# Every subprocess here is wrapped in `timeout`: an earlier version of this file
-# HUNG when given a hook with a blocking flock, which is a test that cannot fail.
+# Every hook invocation is wrapped in `timeout` (the fill helpers are not — they
+# are local and finite): an earlier version of this file HUNG when given a hook
+# with a blocking flock, which is a test that cannot fail.
 # Output is captured to files and checked for zero SIZE, not compared to "" —
 # command substitution strips trailing newlines, so a hook printing one blank
 # line passed the old check.
@@ -82,19 +83,68 @@ silent "uncontended append" "$(ev lock-free)"
 
 echo "== rotation keeps the file bounded AND keeps the recent history"
 fill 12000
-ev after-rotate | timeout 10 "$HOOK"
+silent "rotating invocation" "$(ev after-rotate)"
 timeout 20 python3 - "$FILE" <<'EOF'
 import json, os, sys
 p = sys.argv[1]; lines = open(p).read().splitlines()
 assert os.path.getsize(p) < (1 << 20), "still over the rotation threshold"
 recs = [json.loads(l) for l in lines]                      # every line must parse
 assert recs[-1]["t"] == "after-rotate", "the newest record did not survive the trim"
-kept = [r["t"] for r in recs if r["t"].startswith("seq-")]
+kept = [int(r["t"].split("-")[1]) for r in recs if r["t"].startswith("seq-")]
 assert len(kept) > 100, f"rotation discarded the history it is supposed to keep ({len(kept)} left)"
-seq = [int(t.split("-")[1]) for t in kept]
-assert seq == sorted(seq) and len(seq) == len(set(seq)), "retained records are out of order or duplicated"
-assert seq[-1] == 11999, "the trim kept the oldest records instead of the newest"
+# the retained history must be the exact newest suffix — not merely ordered,
+# unique and ending at the right record, which a hook dropping every other
+# record would also satisfy
+assert kept == list(range(11999 - len(kept) + 1, 12000)), "retained history is not the intact newest suffix"
 EOF
 [[ $? -eq 0 ]] && ok "rotated, bounded, history intact and in order" || no "rotation lost, reordered or corrupted records"
+
+echo "== the worker enforces its own deadline (async waives the runner's)"
+# a FIFO whose write end is held open by someone else: the hook's stdin never
+# reaches EOF, so only its own alarm can end it. Time the HOOK, not the holder.
+mkfifo "$TMP/inpipe"
+( exec 3>"$TMP/inpipe"; sleep 25 ) & holder=$!
+start=$(date +%s)
+timeout 30 "$HOOK" <"$TMP/inpipe" >"$TMP/dout" 2>"$TMP/derr"; code=$?
+elapsed=$(( $(date +%s) - start ))
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -f "$TMP/inpipe"
+if [[ $code -ne 0 ]]; then no "deadline: hook did not exit on its own (code $code after ${elapsed}s)"
+elif [[ -s "$TMP/dout" || -s "$TMP/derr" ]]; then no "deadline: hook spoke on the way out"
+elif [[ $elapsed -gt 12 ]]; then no "deadline: took ${elapsed}s — no self-enforced deadline"
+else ok "deadline: exited silently after ${elapsed}s on a stdin that never closes"
+fi
+
+echo "== a real Notification payload, written by the hook, classified by the reader"
+note_ev(){ printf '{"hook_event_name":"Notification","notification_type":"%s","message":"needs input"}' "$1"; }
+for kind in permission_prompt elicitation_url_dialog; do
+  rm -f "$FILE"; note_ev "$kind" | timeout 10 "$HOOK"
+  timeout 20 python3 - "$HERE" "$TMP" "$kind" ask <<'EOF'
+import importlib.machinery, importlib.util, os, sys
+here, tmp, kind, expect = sys.argv[1:5]
+loader = importlib.machinery.SourceFileLoader("ccplan", os.path.join(here, "..", "bin", "cc-plan"))
+cc = importlib.util.module_from_spec(importlib.util.spec_from_loader("ccplan", loader)); loader.exec_module(cc)
+cc.PULSE_DIR = os.path.join(tmp, "pulse")
+p = cc.read_pulse(os.uname().nodename, 0)
+assert p, f"{kind}: the hook wrote nothing the reader could read"
+got = "ask" if p["ask"] else "announce"
+assert got == expect, f"{kind}: hook->reader produced {got}, expected {expect}"
+EOF
+  [[ $? -eq 0 ]] && ok "end to end: $kind reaches asks[]" || no "end to end: $kind did not reach asks[]"
+done
+for kind in idle_prompt agent_completed; do
+  rm -f "$FILE"; note_ev "$kind" | timeout 10 "$HOOK"
+  timeout 20 python3 - "$HERE" "$TMP" "$kind" announce <<'EOF'
+import importlib.machinery, importlib.util, os, sys
+here, tmp, kind, expect = sys.argv[1:5]
+loader = importlib.machinery.SourceFileLoader("ccplan", os.path.join(here, "..", "bin", "cc-plan"))
+cc = importlib.util.module_from_spec(importlib.util.spec_from_loader("ccplan", loader)); loader.exec_module(cc)
+cc.PULSE_DIR = os.path.join(tmp, "pulse")
+p = cc.read_pulse(os.uname().nodename, 0)
+assert p, f"{kind}: the hook wrote nothing the reader could read"
+got = "ask" if p["ask"] else "announce"
+assert got == expect, f"{kind}: hook->reader produced {got}, expected {expect}"
+EOF
+  [[ $? -eq 0 ]] && ok "end to end: $kind stays out of asks[]" || no "end to end: $kind leaked into asks[]"
+done
 
 exit $rc
