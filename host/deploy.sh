@@ -3,6 +3,7 @@
 #
 # Runs ON cc-host, from a checkout of cc-dispatch (e.g. /opt/cc-releases/repo).
 #   deploy.sh            deploy HEAD: validate -> stage release -> switch -> smoke
+#   deploy.sh --scripts-only  deploy without writing shared agent config/crontab
 #   deploy.sh --check    drift report (repo vs live), exit 1 on drift
 #   deploy.sh --rollback switch back to the previous release (+ smoke)
 #   deploy.sh --list     list releases and what is currently live
@@ -22,6 +23,7 @@
 # NOT managed (see README.md): /opt/cc-sessions/.env, ~/.ssh, docker volumes,
 #   agent-deck config, /opt/cc-notes, /opt/cc-data.
 set -euo pipefail
+SCRIPTS_ONLY=0
 
 HOST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_SHA=$(git -C "$HOST_DIR" rev-parse --short HEAD 2>/dev/null || echo unversioned)
@@ -38,7 +40,7 @@ CX_S='# cc-managed:start (host/fleet/codex-mcp.toml.tmpl — edit in git, deploy
 CX_E='# cc-managed:end'
 CRON_S='# cc-managed:start (host/crontab.snippet — edit in git, deploy via host/deploy.sh)'
 CRON_E='# cc-managed:end'
-SESSION_FILES=(docker-compose.yml Dockerfile CC-CONTAINER.md)
+SESSION_FILES=(docker-compose.yml Dockerfile CC-CONTAINER.md account.yml claude-account)
 
 die(){ echo "ERROR: $*" >&2; exit 1; }
 note(){ echo "→ $*"; }
@@ -207,6 +209,7 @@ switch_to(){  # $1 = release dir; symlink switch under the spawn lock, then live
   # from before the hook existed simply has none.
   [[ -f "$rel/sessions/cc-pulse" ]] && install -m 755 "$rel/sessions/cc-pulse" "$SESSIONS/cc-pulse"
   flock -u 9
+  [[ "$SCRIPTS_ONLY" == 1 ]] && return 0
   # RENDER BEFORE OPENING THE WRITER. `render_x | docker run ... 'cat > /v/f'`
   # reads and truncates the same file: the shell starts both sides at once, the
   # writer truncates, and the reader inside render_x gets an empty file. That
@@ -242,6 +245,7 @@ deploy(){
   local rel="$RELEASES/$(date +%Y%m%d-%H%M%S)-$REPO_SHA"
   mkdir -p "$rel"
   cp -r "$HOST_DIR/bin" "$HOST_DIR/sessions" "$HOST_DIR/fleet" "$rel/"
+  cp -a "$HOST_DIR/../.claude/skills" "$rel/fleet/skills"
   chmod +x "$rel"/bin/*
   local prev=""; [[ -L "$CURRENT" ]] && prev=$(readlink -f "$CURRENT")
   switch_to "$rel"
@@ -282,6 +286,7 @@ case "${1:-deploy}" in
   --check)    check ;;
   --rollback) rollback ;;
   --list)     ls -1t "$RELEASES" 2>/dev/null | grep -v '^repo$' || true; echo "current -> $(readlink -f "$CURRENT" 2>/dev/null || echo none)"; cat "$CURRENT/DEPLOYED" 2>/dev/null || true ;;
+  --scripts-only) SCRIPTS_ONLY=1; deploy ;;
   deploy|--deploy) deploy ;;
-  *) die "usage: deploy.sh [--check|--rollback|--list|deploy]" ;;
+  *) die "usage: deploy.sh [--check|--rollback|--list|--scripts-only|deploy]" ;;
 esac

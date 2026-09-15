@@ -234,3 +234,11 @@ switches `current` back to the release named in `DEPLOYED: prev` and re-runs the
 smoke test. The `.env` is untouched by both, so a rollback reverts the *plumbing*
 (gcp.yml, the cc-spawn allowlist) and leaves the values in place; a session spawned
 against the rolled-back release simply refuses `CC_TOKENS=gcp` again.
+
+## Explicit Claude account
+
+`CC_ACCOUNT=diogo cc-spawn --detach Internal-App test/diogo-account` selects only
+Diogo's privately provisioned Claude credentials and config. Without `CC_ACCOUNT`,
+shared-login behavior remains. See [provisioning, pilot and token replacement](../docs/claude-accounts.md).
+For this rollout, `host/deploy.sh --scripts-only` installs the control plane without
+writing shared agent config or restarting existing sessions.

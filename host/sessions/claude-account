@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Load only the mounted owner's token, just before exec; no token in docker env/argv."""
+import os
+from pathlib import Path
+import sys
+
+
+def launch():
+    try:
+        token = Path('/run/cc-account/token').read_text().strip()
+        if not token or any(c.isspace() for c in token):
+            raise ValueError()
+    except (OSError, ValueError):
+        sys.exit('ERROR: selected account token unavailable; ask its owner to reprovision it')
+    env = {k: v for k, v in os.environ.items() if not k.startswith((
+        'ANTHROPIC_', 'CLAUDE_CODE_OAUTH_', 'CLAUDE_CODE_USE_', 'CLAUDE_CODE_API_KEY',
+    )) and k not in ('CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SUBAGENT_MODEL')}
+    env['CLAUDE_CODE_OAUTH_TOKEN'] = token
+    # Only our credential-free user settings; repo settings can inject API auth.
+    os.execve('/home/pwuser/.npm-global/bin/claude',
+              ['claude', *sys.argv[1:], '--setting-sources', 'user'], env)
+
+
+if __name__ == '__main__':
+    launch()

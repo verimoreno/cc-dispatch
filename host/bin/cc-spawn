@@ -48,6 +48,16 @@ WORKTREE_DIR="$REPO_DIR/wt-$BRANCH"
 SESSION_NAME="${REPO_NAME}-${BRANCH}"
 SESSION_NAME=$(echo "$SESSION_NAME" | tr '/' '-' | tr -cd 'a-zA-Z0-9-_' | tr 'A-Z' 'a-z')
 
+# Validate before admission, clone, or container creation (including stopped containers).
+CC_ACCOUNT="${CC_ACCOUNT:-}"
+cc-account match "$SESSION_NAME" "$CC_ACCOUNT"
+if [[ -n "$CC_ACCOUNT" ]]; then
+  CC_ACCOUNT_DIR=$(cc-account check "$CC_ACCOUNT")
+  export CC_ACCOUNT CC_ACCOUNT_DIR
+  echo "→ Account:  $CC_ACCOUNT"
+fi
+cc-account pin "$SESSION_NAME" "$CC_ACCOUNT"
+
 echo "→ Repo:     $REPO_NAME ($REPO_URL)"
 echo "→ Branch:   $BRANCH"
 echo "→ Worktree: $WORKTREE_DIR"
@@ -156,6 +166,10 @@ else
     esac
   done
   [[ -n "$GRANTED" ]] && echo "      tokens granted:$GRANTED"
+  if [[ -n "$CC_ACCOUNT" ]]; then
+    export CC_ACCOUNT_WRAPPER="$(readlink -f /opt/cc-sessions/claude-account)"
+    COMPOSE_FILES+=(-f account.yml)
+  fi
   STAGE=container
   docker compose "${COMPOSE_FILES[@]}" -p "$SESSION_NAME" up -d
   STARTED_NOW=1
