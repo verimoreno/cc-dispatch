@@ -48,11 +48,14 @@ SILENT_MIN = 20
 PULSE_DIR = os.path.join(NOTES_ROOT, ".pulse")
 PULSE_TAIL_BYTES = 16384
 PULSE_RECENT = 3
-# Notification kinds that are a QUESTION. Everything else Claude Code notifies
-# about (idle_prompt, auth_success, agent_completed, …) is an announcement.
-# (the kinds in the 2.1.27x binary: permission_request, tool_permission,
-# elicitation ask; idle_prompt, agent_completed, auth_* announce)
-ASK_NOTIFICATIONS = {"permission_request", "tool_permission", "elicitation"}
+# Notification kinds that are a QUESTION — the values Claude Code actually emits
+# as notificationType, read out of the 2.1.272 binary. An earlier guess used the
+# PermissionRequest *hook event* names, which are not these, and would have
+# dropped every real dialog while looking like it worked.
+# Announcements, deliberately excluded: idle_prompt, agent_completed,
+# auth_success, computer_use_exit, push_notification, elicitation_complete,
+# elicitation_response.
+ASK_NOTIFICATIONS = {"permission_prompt", "worker_permission_prompt", "agent_needs_input"}
 # a WAITS whose from= names one of these wants a HUMAN answer, not a sibling's
 # artifact — it can never be matched against an UNBLOCKS, so it is an ask
 HUMANS = {"orchestrator", "veri", "human", "you", "me"}
@@ -317,8 +320,9 @@ def is_input_request(rec):
     was captured (and for any producer that omits it)."""
     nt = rec.get("nt") or ""
     if nt: return nt in ASK_NOTIFICATIONS
-    t = (rec.get("t") or "").lower()
-    return "permission" in t or "waiting for your input" in t
+    # No type: a pre-`nt` record. Only a permission prompt is unambiguous —
+    # "waiting for your input" is also the idle announcement's wording.
+    return "permission" in (rec.get("t") or "").lower()
 
 
 def tmux_activity():

@@ -13,10 +13,11 @@ on every other lane's next tool call. Wired up by host/fleet/settings.hooks.json
 whose command tolerates this file being absent (containers older than the image
 that first carried it).
 
-Contract: ALWAYS exit 0, ALWAYS print nothing, NEVER block. A hook that fails
-feeds its stderr back into the agent's context and a hook that hangs stalls the
-lane's loop — the exact costs this exists to avoid. Every failure here is silent
-by design, and every lock is non-blocking.
+Contract: ALWAYS exit 0, ALWAYS print nothing, never wait on anything unbounded.
+A hook that fails feeds its stderr back into the agent's context, and a hook that
+hangs stalls the lane's loop — the exact costs this exists to avoid. Every failure
+here is silent by design, the lock waits ≤120ms and then gives up, and the hook
+entries are declared `async` so the lane never waits on it at all.
 """
 import fcntl, json, os, sys, time
 
@@ -25,6 +26,7 @@ MAX = 200               # chars of target text kept per line
 MAX_INPUT = 1 << 20     # never read an unbounded hook payload
 ROTATE_BYTES = 1 << 20  # keep TAIL_LINES once a lane's file passes this
 TAIL_BYTES = 1 << 16    # bounded rotation read (not the whole file)
+LOCK_TRIES, LOCK_WAIT = 6, 0.02   # ≤120ms of bounded waiting, then drop the line
 FIELDS = ("file_path", "command", "pattern", "path", "url", "description", "prompt")
 
 
@@ -43,7 +45,7 @@ def rotate(f):
     if os.fstat(f.fileno()).st_size <= ROTATE_BYTES:
         return
     f.seek(-TAIL_BYTES, os.SEEK_END)
-    tail = f.read().split(b"\n", 1)[-1]   # drop the partial first line
+    tail = f.read(TAIL_BYTES).split(b"\n", 1)[-1]   # bounded; drop the partial first line
     f.seek(0); f.truncate(); f.write(tail)
 
 
@@ -64,10 +66,15 @@ def main():
     if os.path.exists(path) and not os.path.isfile(path):
         return          # a FIFO/device here would block open() and hang the lane
     with open(path, "a+b") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            f.write(line); return      # contended: O_APPEND write, skip the trim
+        for _ in range(LOCK_TRIES):
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                time.sleep(LOCK_WAIT)
+        else:
+            return    # never append unlocked: that is the writer a concurrent
+                      # rotate would erase. A dropped telemetry line costs nothing.
         rotate(f)
         f.seek(0, os.SEEK_END); f.write(line)
 

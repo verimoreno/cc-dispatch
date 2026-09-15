@@ -52,9 +52,14 @@ live_settings(){ docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat 
 # the hook the LANES actually run: baked into the image, not a volume file
 image_pulse(){ docker run --rm --entrypoint cat cc-session:latest /usr/local/bin/cc-pulse 2>/dev/null; }
 
-# write stdin to <file> in a named volume, atomically (temp + rename)
-vput(){ docker run --rm -i -v "$1":/v cc-session:latest \
-          sh -c "cat > /v/.$2.tmp && mv /v/.$2.tmp /v/$2" || die "cannot write $2 into $1"; }
+# write stdin to <file> in a named volume, atomically. The staging name is UNIQUE
+# per publication: with a fixed one, two overlapping deploys (or a deploy racing a
+# rollback) share the staging inode — B renames it live while A still holds it
+# open, and A's next write lands in the live file. Rename alone does not fix that.
+vput(){ local t=".$2.$$.$(date +%s%N).tmp"
+        docker run --rm -i -v "$1":/v cc-session:latest \
+          sh -c "cat > /v/$t && mv /v/$t /v/$2 || { rm -f /v/$t; exit 1; }" \
+          || die "cannot write $2 into $1"; }
 
 # strip a marker-delimited region (fixed-string match) from stdin
 strip_region(){ awk -v s="$1" -v e="$2" 'index($0,s){f=1} !f{print} index($0,e){f=0}'; }
@@ -241,6 +246,12 @@ deploy(){
   local prev=""; [[ -L "$CURRENT" ]] && prev=$(readlink -f "$CURRENT")
   switch_to "$rel"
   { echo "sha: $REPO_SHA"; echo "date: $(date -u +%FT%TZ)"; echo "by: $(id -un)@$(hostname)"; echo "prev: ${prev:-none}"; } > "$rel/DEPLOYED"
+  # smoke MUST run in a subshell: die() exits, and outside a subshell that exit
+  # would kill the whole script before the rollback branch ever ran (QA finding)
+  if ! (smoke); then
+    if [[ -n "$prev" ]]; then note "smoke FAILED — rolling back to $prev"; switch_to "$prev"; fi
+    die "deploy failed smoke; rolled back to ${prev:-nothing}"
+  fi
   # The pulse feed lands in the notes store — the only mount every lane shares —
   # and must stay out of its hourly auto-commit. Deliberately NOT in switch_to:
   # /opt/cc-notes is an unmanaged surface, and a full or read-only store must not
@@ -250,12 +261,6 @@ deploy(){
     # a last line with no newline would otherwise swallow the new rule
     { [[ -s "$gi" && -n "$(tail -c1 "$gi")" ]] && echo; echo '.pulse/'; } >> "$gi" 2>/dev/null \
       || note "WARN: could not add .pulse/ to $gi — add it by hand"
-  fi
-  # smoke MUST run in a subshell: die() exits, and outside a subshell that exit
-  # would kill the whole script before the rollback branch ever ran (QA finding)
-  if ! (smoke); then
-    if [[ -n "$prev" ]]; then note "smoke FAILED — rolling back to $prev"; switch_to "$prev"; fi
-    die "deploy failed smoke; rolled back to ${prev:-nothing}"
   fi
   note "deployed $rel"
 }

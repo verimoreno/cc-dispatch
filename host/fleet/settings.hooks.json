@@ -1,13 +1,13 @@
 {
   "PostToolUse": [
     {
-      "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "timeout": 5 }]
+      "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "async": true }]
     }
   ],
   "Notification": [
-    { "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "timeout": 5 }] }
+    { "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "async": true }] }
   ],
   "Stop": [
-    { "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "timeout": 5 }] }
+    { "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "async": true }] }
   ]
 }

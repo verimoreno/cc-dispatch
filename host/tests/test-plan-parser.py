@@ -314,25 +314,31 @@ class Pulse(unittest.TestCase):
                 # a REQUEST with nothing after it = sitting on a dialog
                 self.write(tmp, "b", [json.dumps({"ts": now - 60, "ev": "PostToolUse", "tool": "Bash", "t": "ls"}),
                                       json.dumps({"ts": now - 30, "ev": "Notification",
-                                                  "nt": "permission_request", "t": "needs permission"})])
+                                                  "nt": "permission_prompt", "t": "needs permission"})])
                 self.assertEqual(ccplan.read_pulse("b", now)["ask"], "needs permission")
                 # ... but a tool call after it means the agent moved on
                 self.write(tmp, "c", [json.dumps({"ts": now - 60, "ev": "Notification",
-                                                  "nt": "permission_request", "t": "needs permission"}),
+                                                  "nt": "permission_prompt", "t": "needs permission"}),
                                       json.dumps({"ts": now - 30, "ev": "PostToolUse", "tool": "Bash", "t": "ls"})])
                 self.assertIsNone(ccplan.read_pulse("c", now)["ask"])
                 # ... and an ANNOUNCEMENT is never an ask: idle_prompt after a
                 # finished turn used to park done lanes in the queue forever
-                for nt in ("idle_prompt", "agent_completed", "auth_success"):
+                for nt in ("idle_prompt", "agent_completed", "auth_success",
+                           "elicitation_complete", "elicitation_response", "push_notification"):
                     self.write(tmp, "d", [json.dumps({"ts": now - 30, "ev": "Notification",
                                                       "nt": nt, "t": "Claude is waiting"})])
                     self.assertIsNone(ccplan.read_pulse("d", now)["ask"], nt)
-                # a record with no nt at all falls back to the message
+                # a record with no nt at all falls back to the message — and only
+                # to an unambiguous one: "waiting for your input" is ALSO how the
+                # idle announcement reads, so it must not count
                 self.write(tmp, "e", [json.dumps({"ts": now, "ev": "Notification", "t": "needs your permission"})])
                 self.assertIsNotNone(ccplan.read_pulse("e", now)["ask"])
+                self.write(tmp, "e2", [json.dumps({"ts": now, "ev": "Notification",
+                                                   "t": "Claude is waiting for your input"})])
+                self.assertIsNone(ccplan.read_pulse("e2", now)["ask"])
                 # a lane-writable store can hold wrong TYPES; projection must survive
                 self.write(tmp, "f", [json.dumps({"ts": now, "ev": "Notification",
-                                                  "nt": "permission_request", "t": {"x": 1}})])
+                                                  "nt": "permission_prompt", "t": {"x": 1}})])
                 self.assertIsInstance(ccplan.read_pulse("f", now)["ask"], str)
                 # one whole record inside the window is not a clipped first line
                 self.write(tmp, "g", [json.dumps({"ts": now, "ev": "Stop", "tool": "", "t": ""})])
