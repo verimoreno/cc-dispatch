@@ -48,6 +48,11 @@ SILENT_MIN = 20
 PULSE_DIR = os.path.join(NOTES_ROOT, ".pulse")
 PULSE_TAIL_BYTES = 16384
 PULSE_RECENT = 3
+# Notification kinds that are a QUESTION. Everything else Claude Code notifies
+# about (idle_prompt, auth_success, agent_completed, …) is an announcement.
+# (the kinds in the 2.1.27x binary: permission_request, tool_permission,
+# elicitation ask; idle_prompt, agent_completed, auth_* announce)
+ASK_NOTIFICATIONS = {"permission_request", "tool_permission", "elicitation"}
 # a WAITS whose from= names one of these wants a HUMAN answer, not a sibling's
 # artifact — it can never be matched against an UNBLOCKS, so it is an ask
 HUMANS = {"orchestrator", "veri", "human", "you", "me"}
@@ -233,23 +238,36 @@ def verify_claim(c):
     if head != c["sha"]:
         return False, f"PR head is {head[:8]}, claim says {c['sha'][:8]} (force-push or stale claim)"
     state = pr.get("state"); merged = pr.get("merged", False)
-    checks = check_runs(c["repo"], c["sha"], tok)
-    c["checks"] = checks
-    return True, f"PR head matches; state={state} merged={merged} checks={checks}"
+    # a merged PR's CI is already history and cannot gate anything — skip the
+    # call (most claims in a long-lived plan are merged, and this is the bulk
+    # of the added request budget)
+    c["checks"] = "merged" if merged else check_runs(c["repo"], c["sha"], tok)
+    return True, f"PR head matches; state={state} merged={merged} checks={c['checks']}"
 
 
 def check_runs(repo, sha, tok):
     """-> pass | fail | pending | none | unknown. A note saying "CI green" is a
     claim; this is the fact. Red CI does NOT refute the artifact (the PR exists),
-    it is a merge decision — project() raises it as its own contradiction."""
-    out = sh(["curl", "-s", "-H", f"Authorization: token {tok}",
+    it is a merge decision — project() raises it as its own contradiction.
+
+    Only ever narrower than the truth: a partial or unreadable answer is
+    `unknown`, never `none`/`pass` (an API error must not read as "no CI")."""
+    out = sh(["curl", "-s", "-w", "\n%{http_code}", "-H", f"Authorization: token {tok}",
               f"https://api.github.com/repos/{repo}/commits/{sha}/check-runs?per_page=100"], timeout=20)
     if out is None: return "unknown"
-    try: runs = json.loads(out).get("check_runs") or []
-    except (json.JSONDecodeError, AttributeError): return "unknown"
+    body, _, code = out.rpartition("\n")
+    if not code.startswith("2"): return "unknown"     # 403 no-scope, 429, 5xx
+    try: doc = json.loads(body)
+    except json.JSONDecodeError: return "unknown"
+    if not isinstance(doc, dict) or not isinstance(doc.get("check_runs"), list): return "unknown"
+    runs = doc["check_runs"]
+    if doc.get("total_count", len(runs)) > len(runs): return "unknown"   # unread pages
     if not runs: return "none"
+    # a known failure outranks a queued sibling: "pending" would hide it AND
+    # sort it below pending in the contradiction ranking
+    if any(r.get("status") == "completed" and
+           r.get("conclusion") not in ("success", "neutral", "skipped") for r in runs): return "fail"
     if any(r.get("status") != "completed" for r in runs): return "pending"
-    if any(r.get("conclusion") not in ("success", "neutral", "skipped") for r in runs): return "fail"
     return "pass"
 
 def read_pulse(name, now):
@@ -260,38 +278,62 @@ def read_pulse(name, now):
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             start = max(0, f.tell() - PULSE_TAIL_BYTES)
-            f.seek(start)
-            lines = f.read().decode("utf-8", "replace").splitlines()
-            if start: lines = lines[1:]   # seeked into the middle of a line
+            # read one byte early so we can tell a clipped first line from a whole
+            # one, instead of always dropping a record that may be the only one
+            f.seek(max(0, start - 1))
+            buf = f.read(PULSE_TAIL_BYTES + 1)
     except OSError:
         return None
+    if start: buf = buf.split(b"\n", 1)[-1]
     recs = []
-    for ln in lines:
+    for ln in buf.decode("utf-8", "replace").splitlines():
         try:
             r = json.loads(ln)
         except json.JSONDecodeError:
-            continue                      # a torn line from the rotate race
-        if isinstance(r, dict) and isinstance(r.get("ts"), int): recs.append(r)
+            continue                      # a torn line
+        # the store is lane-writable: a record whose fields are the wrong TYPE
+        # must not reach the projection, where it used to crash `json --all`
+        if isinstance(r, dict) and isinstance(r.get("ts"), int):
+            for k in ("ev", "tool", "t", "nt"):
+                if k in r and not isinstance(r[k], str): r[k] = str(r[k])[:200]
+            recs.append(r)
     if not recs: return None
     last = recs[-1]
-    # a Notification with no tool call after it = the agent is sitting on a
-    # dialog waiting for a human — the failure mode lanes were told not to have
-    ask = last if last.get("ev") == "Notification" else None
+    # A Notification with no tool call after it MAY be a dialog — but only the
+    # kinds that actually ask something. idle_prompt / auth_success /
+    # agent_completed are announcements, and treating them as asks parked
+    # finished lanes in the "waiting on you" queue forever.
+    ask = last.get("t") if last.get("ev") == "Notification" and is_input_request(last) else None
     return {"last_ts": last["ts"], "age_min": round((now - last["ts"]) / 60),
-            "events": len(recs), "ask": (ask or {}).get("t") or None,
+            "events": len(recs), "ask": ask or None,
             "recent": [{"ev": r.get("ev"), "tool": r.get("tool"), "t": r.get("t"),
                         "age_min": round((now - r["ts"]) / 60)}
                        for r in recs[-PULSE_RECENT:]]}
 
 
+def is_input_request(rec):
+    """Does this Notification actually want a human? `nt` is the hook's
+    notification_type; fall back to the message for records written before it
+    was captured (and for any producer that omits it)."""
+    nt = rec.get("nt") or ""
+    if nt: return nt in ASK_NOTIFICATIONS
+    t = (rec.get("t") or "").lower()
+    return "permission" in t or "waiting for your input" in t
+
+
 def tmux_activity():
-    """tmux session -> last output epoch. One call for the whole fleet; the
-    cheapest liveness signal on the host (no capture-pane, no docker exec)."""
-    out = sh(["tmux", "list-sessions", "-F", "#{session_name} #{session_activity}"])
+    """tmux session -> newest window output epoch. One call for the whole fleet;
+    the cheapest liveness signal on the host (no capture-pane, no docker exec).
+
+    WINDOW activity, not session_activity: the latter tracks attachment, so a
+    detached agent printing continuously leaves it frozen — measured on this
+    fleet at 22min stale for a session whose window clock read `now`. Using it
+    reported healthy lanes as silent, which is the whole signal backwards."""
+    out = sh(["tmux", "list-windows", "-a", "-F", "#{session_name} #{window_activity}"])
     act = {}
     for ln in (out or "").splitlines():
         sess, _, ts = ln.partition(" ")
-        try: act[sess] = int(ts)
+        try: act[sess] = max(act.get(sess, 0), int(ts))
         except ValueError: pass
     return act
 
@@ -345,7 +387,10 @@ def project(plan_id, verify=False):
         led = ledger.get(name) or {}
         s["ledger_state"] = led.get("state")
         s["pulse"] = read_pulse(name, now)
-        tsess = led.get("tmux") or next((t for t in tmux if t.startswith(f"agentdeck_{name}_")), "")
+        # trust the ledger's tmux name only while that session still exists —
+        # a stale record otherwise blocks the fallback and reports no liveness
+        tsess = led.get("tmux") if led.get("tmux") in tmux else \
+            next((t for t in tmux if t.startswith(f"agentdeck_{name}_")), name if name in tmux else "")
         if (act := tmux.get(tsess)):
             s["pane_idle_min"] = round((now - act) / 60)
         s["container"] = containers.get(name)

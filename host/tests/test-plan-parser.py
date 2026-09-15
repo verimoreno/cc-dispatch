@@ -311,16 +311,83 @@ class Pulse(unittest.TestCase):
                 p = ccplan.read_pulse("a", now)
                 self.assertEqual((p["age_min"], p["events"], p["ask"]), (2, 2, None))
                 self.assertEqual(p["recent"][-1]["tool"], "Edit")
-                # a Notification with nothing after it = sitting on a dialog
+                # a REQUEST with nothing after it = sitting on a dialog
                 self.write(tmp, "b", [json.dumps({"ts": now - 60, "ev": "PostToolUse", "tool": "Bash", "t": "ls"}),
-                                      json.dumps({"ts": now - 30, "ev": "Notification", "t": "needs permission"})])
+                                      json.dumps({"ts": now - 30, "ev": "Notification",
+                                                  "nt": "permission_request", "t": "needs permission"})])
                 self.assertEqual(ccplan.read_pulse("b", now)["ask"], "needs permission")
                 # ... but a tool call after it means the agent moved on
-                self.write(tmp, "c", [json.dumps({"ts": now - 60, "ev": "Notification", "t": "needs permission"}),
+                self.write(tmp, "c", [json.dumps({"ts": now - 60, "ev": "Notification",
+                                                  "nt": "permission_request", "t": "needs permission"}),
                                       json.dumps({"ts": now - 30, "ev": "PostToolUse", "tool": "Bash", "t": "ls"})])
                 self.assertIsNone(ccplan.read_pulse("c", now)["ask"])
+                # ... and an ANNOUNCEMENT is never an ask: idle_prompt after a
+                # finished turn used to park done lanes in the queue forever
+                for nt in ("idle_prompt", "agent_completed", "auth_success"):
+                    self.write(tmp, "d", [json.dumps({"ts": now - 30, "ev": "Notification",
+                                                      "nt": nt, "t": "Claude is waiting"})])
+                    self.assertIsNone(ccplan.read_pulse("d", now)["ask"], nt)
+                # a record with no nt at all falls back to the message
+                self.write(tmp, "e", [json.dumps({"ts": now, "ev": "Notification", "t": "needs your permission"})])
+                self.assertIsNotNone(ccplan.read_pulse("e", now)["ask"])
+                # a lane-writable store can hold wrong TYPES; projection must survive
+                self.write(tmp, "f", [json.dumps({"ts": now, "ev": "Notification",
+                                                  "nt": "permission_request", "t": {"x": 1}})])
+                self.assertIsInstance(ccplan.read_pulse("f", now)["ask"], str)
+                # one whole record inside the window is not a clipped first line
+                self.write(tmp, "g", [json.dumps({"ts": now, "ev": "Stop", "tool": "", "t": ""})])
+                self.assertEqual(ccplan.read_pulse("g", now)["events"], 1)
             finally:
                 ccplan.PULSE_DIR = old
+
+    def test_window_activity_is_the_clock_not_session_activity(self):
+        """session_activity freezes for a detached pane — measured 22min stale on
+        a session whose window clock read now."""
+        seen = {}
+        old = ccplan.sh
+        ccplan.sh = lambda cmd, **kw: seen.update(cmd=cmd) or "s1 100\ns1 200\ns2 50\nbad line\n"
+        try:
+            act = ccplan.tmux_activity()
+        finally:
+            ccplan.sh = old
+        self.assertIn("list-windows", seen["cmd"])
+        self.assertIn("#{window_activity}", " ".join(seen["cmd"]))
+        self.assertEqual(act, {"s1": 200, "s2": 50})   # newest window per session
+
+
+class CheckRuns(unittest.TestCase):
+    """CI is the fact behind the note's "CI green" claim — and must only ever be
+    narrower than the truth: a partial or unreadable answer is `unknown`."""
+
+    def runs(self, body, code="200"):
+        import json
+        old = ccplan.sh
+        ccplan.sh = lambda cmd, **kw: None if body is None else json.dumps(body) + "\n" + code
+        try:
+            return ccplan.check_runs("o/r", "a" * 40, "tok")
+        finally:
+            ccplan.sh = old
+
+    def r(self, status, conclusion=None):
+        return {"status": status, "conclusion": conclusion}
+
+    def test_classification(self):
+        self.assertEqual(self.runs({"check_runs": []}), "none")
+        self.assertEqual(self.runs({"check_runs": [self.r("completed", "success")]}), "pass")
+        self.assertEqual(self.runs({"check_runs": [self.r("completed", "skipped")]}), "pass")
+        self.assertEqual(self.runs({"check_runs": [self.r("queued")]}), "pending")
+        # a known failure outranks a queued sibling — "pending" would hide it
+        self.assertEqual(self.runs({"check_runs": [self.r("completed", "failure"), self.r("queued")]}), "fail")
+
+    def test_partial_or_unreadable_is_unknown_never_none(self):
+        self.assertEqual(self.runs(None), "unknown")                          # transport
+        self.assertEqual(self.runs({"message": "Resource not accessible"}, "403"), "unknown")
+        self.assertEqual(self.runs({"message": "rate limited"}, "429"), "unknown")
+        # a 200 whose body is an error doc must not read as "no CI"
+        self.assertEqual(self.runs({"message": "nope"}), "unknown")
+        # more runs than this page returned: never call that pass
+        self.assertEqual(self.runs({"total_count": 101,
+                                    "check_runs": [self.r("completed", "success")] * 100}), "unknown")
 
 
 class ReviewRegressions(unittest.TestCase):

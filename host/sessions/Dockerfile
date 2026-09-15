@@ -109,6 +109,15 @@ RUN printf '#!/bin/bash\nexec claude --dangerously-skip-permissions "$@"\n' > /u
     printf '#!/bin/bash\nexec codex --dangerously-bypass-approvals-and-sandbox "$@"\n' > /usr/local/bin/cxd && chmod +x /usr/local/bin/cxd && \
     printf '#!/bin/bash\nexec gemini --yolo "$@"\n' > /usr/local/bin/gmd && chmod +x /usr/local/bin/gmd && \
     printf '#!/bin/bash\n# ocd — OpenCode auto-approve; forwards OPENCODE_MODE->--agent, OPENCODE_MODEL->--model\nexec opencode --auto ${OPENCODE_MODE:+--agent "$OPENCODE_MODE"} ${OPENCODE_MODEL:+--model "$OPENCODE_MODEL"} "$@"\n' > /usr/local/bin/ocd && chmod +x /usr/local/bin/ocd
+
+# ---- The plan-notes pulse hook (see host/sessions/cc-pulse) ----
+# Baked in, root-owned, 755: every lane mounts the cc-auth volume read-write, so
+# an executable shipped THERE would let one prompt-injected lane run code in all
+# the others. Bump the image (docker compose build) to roll out a change; only
+# containers spawned from the new image carry it, and the hook command in
+# fleet/settings.hooks.json is written to no-op in older ones.
+COPY --chown=root:root cc-pulse /usr/local/bin/cc-pulse
+RUN chmod 755 /usr/local/bin/cc-pulse && python3 -c 'import ast;ast.parse(open("/usr/local/bin/cc-pulse").read())'
 USER pwuser
 
 # ---- Persistent dirs (mounted as named volumes at runtime) ----

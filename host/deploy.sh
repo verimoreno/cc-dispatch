@@ -14,7 +14,10 @@
 #   host/fleet/CLAUDE.md.tmpl  -> managed region of CLAUDE.md in the cc-auth volume
 #   host/fleet/codex-mcp.toml.tmpl -> managed region of config.toml in cc-codex
 #   host/fleet/settings.hooks.json -> "hooks" key of settings.json in cc-auth
-#   host/fleet/pulse-hook.py   -> /home/pwuser/.claude/cc-pulse in cc-auth (+x)
+#   host/sessions/cc-pulse     -> /opt/cc-sessions/cc-pulse (docker build context);
+#                                 the LANES run the copy baked into the image, so a
+#                                 change here needs `docker compose build` — --check
+#                                 compares the image and says so
 #   host/crontab.snippet       -> managed block of veri's crontab
 # NOT managed (see README.md): /opt/cc-sessions/.env, ~/.ssh, docker volumes,
 #   agent-deck config, /opt/cc-notes, /opt/cc-data.
@@ -46,7 +49,12 @@ xln(){ ln -sfn "$1" "$2" 2>/dev/null || sudo -n ln -sfn "$1" "$2" || die "cannot
 live_claude(){ docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat /v/CLAUDE.md' 2>/dev/null; }
 live_codex(){  docker run --rm -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat /v/config.toml' 2>/dev/null; }
 live_settings(){ docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat /v/settings.json' 2>/dev/null; }
-live_pulse(){  docker run --rm -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat /v/cc-pulse' 2>/dev/null; }
+# the hook the LANES actually run: baked into the image, not a volume file
+image_pulse(){ docker run --rm --entrypoint cat cc-session:latest /usr/local/bin/cc-pulse 2>/dev/null; }
+
+# write stdin to <file> in a named volume, atomically (temp + rename)
+vput(){ docker run --rm -i -v "$1":/v cc-session:latest \
+          sh -c "cat > /v/.$2.tmp && mv /v/.$2.tmp /v/$2" || die "cannot write $2 into $1"; }
 
 # strip a marker-delimited region (fixed-string match) from stdin
 strip_region(){ awk -v s="$1" -v e="$2" 'index($0,s){f=1} !f{print} index($0,e){f=0}'; }
@@ -129,7 +137,15 @@ check(){
   fi
   diff <(live_codex) <(render_codex) >/dev/null 2>&1 || { echo "DRIFT: codex config.toml managed region"; drift=1; }
   diff <(live_settings) <(render_settings) >/dev/null 2>&1 || { echo "DRIFT: fleet settings.json hooks key"; drift=1; }
-  diff <(live_pulse) "$HOST_DIR/fleet/pulse-hook.py" >/dev/null 2>&1 || { echo "DRIFT: fleet cc-pulse hook"; drift=1; }
+  diff -q "$HOST_DIR/sessions/cc-pulse" "$SESSIONS/cc-pulse" >/dev/null 2>&1 \
+    || { echo "DRIFT: $SESSIONS/cc-pulse (build context)"; drift=1; }
+  # the image is the only copy the lanes run: an edited hook that was never
+  # rebuilt is invisible everywhere else
+  if ! diff <(image_pulse) "$HOST_DIR/sessions/cc-pulse" >/dev/null 2>&1; then
+    echo "DRIFT: cc-session image cc-pulse — rebuild: (cd $SESSIONS && docker compose build)"; drift=1
+  elif [[ "$(docker run --rm --entrypoint stat cc-session:latest -c '%U %a' /usr/local/bin/cc-pulse 2>/dev/null)" != "root 755" ]]; then
+    echo "DRIFT: image cc-pulse is not root-owned 755"; drift=1
+  fi
   diff <(crontab -l 2>/dev/null) <(render_cron) >/dev/null 2>&1 || { echo "DRIFT: crontab managed block"; drift=1; }
   if [[ $drift -eq 0 ]]; then echo "OK: no drift ($REPO_SHA)"; fi
   return $drift
@@ -164,8 +180,8 @@ validate(){
   [[ -n "$(live_settings)" ]] || die "cannot read fleet settings.json (docker/volume problem)"
   render_settings | python3 -c 'import json,sys; json.load(sys.stdin)' \
     || die "rendered fleet settings.json is not valid JSON"
-  python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$HOST_DIR/fleet/pulse-hook.py" \
-    || die "syntax: fleet/pulse-hook.py"
+  python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$HOST_DIR/sessions/cc-pulse" \
+    || die "syntax: sessions/cc-pulse"
   note "validation ok"
 }
 
@@ -181,6 +197,10 @@ switch_to(){  # $1 = release dir; symlink switch under the spawn lock, then live
   done
   if [[ -d "$SESSIONS/tokens.d" && ! -L "$SESSIONS/tokens.d" ]]; then mv "$SESSIONS/tokens.d" "$SESSIONS/tokens.d.pre-release"; fi
   xln "$CURRENT/sessions/tokens.d" "$SESSIONS/tokens.d"
+  # COPIED, not linked: it is COPYed by the Dockerfile, and docker will not follow
+  # a build-context symlink that points outside the context. A rollback target
+  # from before the hook existed simply has none.
+  [[ -f "$rel/sessions/cc-pulse" ]] && install -m 755 "$rel/sessions/cc-pulse" "$SESSIONS/cc-pulse"
   flock -u 9
   # RENDER BEFORE OPENING THE WRITER. `render_x | docker run ... 'cat > /v/f'`
   # reads and truncates the same file: the shell starts both sides at once, the
@@ -190,18 +210,12 @@ switch_to(){  # $1 = release dir; symlink switch under the spawn lock, then live
   claude_md=$(render_claude); [[ -n "$claude_md" ]] || die "render_claude produced nothing"
   codex_toml=$(render_codex); [[ -n "$codex_toml" ]] || die "render_codex produced nothing"
   settings_json=$(render_settings); [[ -n "$settings_json" ]] || die "render_settings produced nothing"
-  printf '%s\n' "$claude_md" | docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/CLAUDE.md'
-  printf '%s\n' "$codex_toml" | docker run --rm -i -v "$CODEX_VOL":/v cc-session:latest sh -c 'cat > /v/config.toml'
-  printf '%s\n' "$settings_json" | docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/settings.json'
-  # a rollback target from before the hook existed has no fleet/ — leave the
-  # live hook alone rather than failing the switch
-  if [[ -f "$rel/fleet/pulse-hook.py" ]]; then
-    docker run --rm -i -v "$AUTH_VOL":/v cc-session:latest sh -c 'cat > /v/cc-pulse && chmod 755 /v/cc-pulse' \
-      < "$rel/fleet/pulse-hook.py"
-  fi
-  # the pulse lands in the notes store (the only mount every lane shares); it is a
-  # per-tool-call feed, so keep it out of the store's hourly auto-commit
-  grep -qxF '.pulse/' /opt/cc-notes/.gitignore 2>/dev/null || echo '.pulse/' >> /opt/cc-notes/.gitignore
+  # ...and PUBLISH BY RENAME. `cat > /v/f` truncates the live file in place, so a
+  # lane reading settings.json in that window gets half a document (and a killed
+  # writer leaves it that way). Write beside it, then rename — rename is atomic.
+  vput "$AUTH_VOL" CLAUDE.md <<<"$claude_md"
+  vput "$CODEX_VOL" config.toml <<<"$codex_toml"
+  vput "$AUTH_VOL" settings.json <<<"$settings_json"
   render_cron | crontab -
 }
 
@@ -227,6 +241,16 @@ deploy(){
   local prev=""; [[ -L "$CURRENT" ]] && prev=$(readlink -f "$CURRENT")
   switch_to "$rel"
   { echo "sha: $REPO_SHA"; echo "date: $(date -u +%FT%TZ)"; echo "by: $(id -un)@$(hostname)"; echo "prev: ${prev:-none}"; } > "$rel/DEPLOYED"
+  # The pulse feed lands in the notes store — the only mount every lane shares —
+  # and must stay out of its hourly auto-commit. Deliberately NOT in switch_to:
+  # /opt/cc-notes is an unmanaged surface, and a full or read-only store must not
+  # fail a switch after the live files have already changed. Best-effort, reported.
+  local gi=/opt/cc-notes/.gitignore
+  if ! grep -qxF '.pulse/' "$gi" 2>/dev/null; then
+    # a last line with no newline would otherwise swallow the new rule
+    { [[ -s "$gi" && -n "$(tail -c1 "$gi")" ]] && echo; echo '.pulse/'; } >> "$gi" 2>/dev/null \
+      || note "WARN: could not add .pulse/ to $gi — add it by hand"
+  fi
   # smoke MUST run in a subshell: die() exits, and outside a subshell that exit
   # would kill the whole script before the rollback branch ever ran (QA finding)
   if ! (smoke); then

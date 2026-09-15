@@ -644,7 +644,7 @@ async function refresh() {
     const counts = { working: 0, done: 0, blocked: 0, waiting: 0, attention: 0, asks: 0 };
     for (const p of plans) {
       counts.attention += (p.contradictions || []).length + (p.parser_errors || []).length;
-      counts.asks += (p.asks || []).length;
+      counts.asks += new Set((p.asks || []).map((a) => a.session)).size;  // sessions, not rows
       for (const s of p.sessions || []) {
         if (s.state === "working") counts.working++;
         else if (s.state === "done") counts.done++;

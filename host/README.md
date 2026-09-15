@@ -12,8 +12,12 @@ directory existed these files were hand-edited on the host with no history
                           tokens.d/ (opt-in deploy-token overrides), env.template
     fleet/CLAUDE.md.tmpl  managed region of the fleet-wide CLAUDE.md (cc-auth volume)
     fleet/settings.hooks.json  the "hooks" key of the fleet settings.json (cc-auth)
-    fleet/pulse-hook.py   the heartbeat every lane's hooks write — deployed into
-                          cc-auth as /home/pwuser/.claude/cc-pulse, read by cc-plan
+    sessions/cc-pulse     the heartbeat every lane's hooks write, read by cc-plan.
+                          COPYed into the image at /usr/local/bin (root-owned): the
+                          cc-auth volume is lane-writable, so an executable there
+                          would let one injected lane run code in all the others.
+                          Changing it needs a rebuild — `cd /opt/cc-sessions &&
+                          docker compose build` — and only NEW containers get it.
     crontab.snippet       managed block of veri's crontab on the host
     deploy.sh             deploy / --check / --rollback / --list (see header)
 

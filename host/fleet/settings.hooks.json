@@ -1,14 +1,13 @@
 {
   "PostToolUse": [
     {
-      "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash|Task",
-      "hooks": [{ "type": "command", "command": "/home/pwuser/.claude/cc-pulse", "timeout": 5 }]
+      "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "timeout": 5 }]
     }
   ],
   "Notification": [
-    { "hooks": [{ "type": "command", "command": "/home/pwuser/.claude/cc-pulse", "timeout": 5 }] }
+    { "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "timeout": 5 }] }
   ],
   "Stop": [
-    { "hooks": [{ "type": "command", "command": "/home/pwuser/.claude/cc-pulse", "timeout": 5 }] }
+    { "hooks": [{ "type": "command", "command": "/usr/local/bin/cc-pulse 2>/dev/null || true", "timeout": 5 }] }
   ]
 }
