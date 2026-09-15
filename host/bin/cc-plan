@@ -48,14 +48,16 @@ SILENT_MIN = 20
 PULSE_DIR = os.path.join(NOTES_ROOT, ".pulse")
 PULSE_TAIL_BYTES = 16384
 PULSE_RECENT = 3
-# Notification kinds that are a QUESTION — the values Claude Code actually emits
-# as notificationType, read out of the 2.1.272 binary. An earlier guess used the
-# PermissionRequest *hook event* names, which are not these, and would have
-# dropped every real dialog while looking like it worked.
-# Announcements, deliberately excluded: idle_prompt, agent_completed,
-# auth_success, computer_use_exit, push_notification, elicitation_complete,
-# elicitation_response.
-ASK_NOTIFICATIONS = {"permission_prompt", "worker_permission_prompt", "agent_needs_input"}
+# Notification kinds that are a QUESTION — a human must act before the lane moves.
+# Read out of the 2.1.272 binary's own kind list, not guessed: permission_prompt
+# is the `?? ` default in the dispatcher, the elicitation pair is built by a
+# notification factory (`type: isUrl ? "elicitation_url_dialog" : "elicitation_dialog"`),
+# so grepping for literal `notificationType:"…"` assignments finds neither — the
+# mistake that shipped an allowlist of hook EVENT names in the first place.
+# Announcements, deliberately excluded: idle_prompt, agent_completed, auth_success,
+# computer_use_enter/exit, push_notification, quota_auto_resume_*.
+ASK_NOTIFICATIONS = {"permission_prompt", "worker_permission_prompt", "agent_needs_input",
+                     "elicitation_dialog", "elicitation_url_dialog"}
 # a WAITS whose from= names one of these wants a HUMAN answer, not a sibling's
 # artifact — it can never be matched against an UNBLOCKS, so it is an ask
 HUMANS = {"orchestrator", "veri", "human", "you", "me"}

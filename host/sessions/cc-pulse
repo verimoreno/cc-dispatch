@@ -13,20 +13,27 @@ on every other lane's next tool call. Wired up by host/fleet/settings.hooks.json
 whose command tolerates this file being absent (containers older than the image
 that first carried it).
 
-Contract: ALWAYS exit 0, ALWAYS print nothing, never wait on anything unbounded.
-A hook that fails feeds its stderr back into the agent's context, and a hook that
-hangs stalls the lane's loop — the exact costs this exists to avoid. Every failure
-here is silent by design, the lock waits ≤120ms and then gives up, and the hook
-entries are declared `async` so the lane never waits on it at all.
+Contract, precisely — a hook that speaks feeds its stderr into the agent's context
+and a hook that hangs used to stall the lane's loop, which are the costs this
+exists to avoid:
+  - the LANE never waits: the hook entries are declared `async`, so the agent
+    continues the moment it is spawned;
+  - this process always exits silently, within DEADLINE seconds, by its own alarm.
+    `async` does not enforce the runner's `timeout`, so without that alarm a hook
+    blocked on stdin or a wedged filesystem would live until session teardown, and
+    a long lane would accumulate them;
+  - what no design can bound: uninterruptible kernel I/O, and external termination
+    (the `|| true` in the hook command is the contract boundary the shell sees).
 """
-import fcntl, json, os, sys, time
+import fcntl, json, os, signal, sys, time
 
 PULSE = "/opt/cc-notes/.pulse"
 MAX = 200               # chars of target text kept per line
 MAX_INPUT = 1 << 20     # never read an unbounded hook payload
 ROTATE_BYTES = 1 << 20  # keep TAIL_LINES once a lane's file passes this
 TAIL_BYTES = 1 << 16    # bounded rotation read (not the whole file)
-LOCK_TRIES, LOCK_WAIT = 6, 0.02   # ≤120ms of bounded waiting, then drop the line
+LOCK_TRIES, LOCK_WAIT = 6, 0.02   # bounded waiting for the lock, then drop the line
+DEADLINE = 5            # seconds; self-enforced, because `async` waives the runner's
 FIELDS = ("file_path", "command", "pattern", "path", "url", "description", "prompt")
 
 
@@ -80,6 +87,10 @@ def main():
 
 
 try:
+    # the whole run, not just one step: whatever is slow, this process is gone by
+    # DEADLINE and says nothing on the way out
+    signal.signal(signal.SIGALRM, lambda *_: os._exit(0))
+    signal.alarm(DEADLINE)
     main()
 except BaseException:   # KeyboardInterrupt/SystemExit included: never speak, never fail
     pass

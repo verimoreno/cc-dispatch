@@ -316,6 +316,13 @@ class Pulse(unittest.TestCase):
                                       json.dumps({"ts": now - 30, "ev": "Notification",
                                                   "nt": "permission_prompt", "t": "needs permission"})])
                 self.assertEqual(ccplan.read_pulse("b", now)["ask"], "needs permission")
+                # every kind that means "a human must act" — the elicitation pair is
+                # built by a factory, so it is absent from the literal assignments
+                for nt in ("permission_prompt", "worker_permission_prompt", "agent_needs_input",
+                           "elicitation_dialog", "elicitation_url_dialog"):
+                    self.write(tmp, "b2", [json.dumps({"ts": now, "ev": "Notification",
+                                                       "nt": nt, "t": "an MCP server needs your input"})])
+                    self.assertIsNotNone(ccplan.read_pulse("b2", now)["ask"], nt)
                 # ... but a tool call after it means the agent moved on
                 self.write(tmp, "c", [json.dumps({"ts": now - 60, "ev": "Notification",
                                                   "nt": "permission_prompt", "t": "needs permission"}),
@@ -324,7 +331,8 @@ class Pulse(unittest.TestCase):
                 # ... and an ANNOUNCEMENT is never an ask: idle_prompt after a
                 # finished turn used to park done lanes in the queue forever
                 for nt in ("idle_prompt", "agent_completed", "auth_success",
-                           "elicitation_complete", "elicitation_response", "push_notification"):
+                           "elicitation_complete", "elicitation_response", "push_notification",
+                           "computer_use_exit", "quota_auto_resume_fired"):
                     self.write(tmp, "d", [json.dumps({"ts": now - 30, "ev": "Notification",
                                                       "nt": nt, "t": "Claude is waiting"})])
                     self.assertIsNone(ccplan.read_pulse("d", now)["ask"], nt)
