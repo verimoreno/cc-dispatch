@@ -82,16 +82,25 @@ with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(out), cont
            'ANTHROPIC_BASE_URL':'https://wrong.invalid', 'CLAUDE_CODE_USE_BEDROCK':'1',
            'CLAUDE_CODE_OAUTH_TOKEN':OTHER, 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN':OTHER,
            'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR':'3', 'CLAUDE_CONFIG_DIR':'/wrong', 'PATH':'/bin'}
-    with patch.dict(os.environ, env, clear=True), patch.object(Path, 'read_text', return_value=TOKEN), patch.object(os, 'execve') as execute:
+    with patch.dict(os.environ, env, clear=True), patch.object(Path, 'exists', return_value=False), patch.object(Path, 'read_text', return_value=TOKEN), patch.object(os, 'execve') as execute:
         w.launch()
         binary, argv, actual = execute.call_args.args
         assert actual['CLAUDE_CODE_OAUTH_TOKEN'] == TOKEN
         assert OTHER not in json.dumps(actual)
         assert 'CLAUDE_CONFIG_DIR' not in actual
         assert not any(k.startswith('ANTHROPIC_') for k in actual)
-        assert argv[-2:] == ['--setting-sources', 'user']
+        assert argv[1:3] == ['--setting-sources', 'user']
         assert TOKEN not in str(argv)
-    with patch.object(Path, 'read_text', return_value=''), patch.object(os, 'execve') as execute:
+    for settings in ({'env': {'ANTHROPIC_API_KEY': OTHER}}, {'apiKeyHelper': OTHER},
+                     {'env': {'HOME': '/wrong'}}, [], {'env': []}):
+        with patch.object(Path, 'exists', return_value=True), patch.object(Path, 'read_text', return_value=json.dumps(settings)), patch.object(os, 'execve') as execute:
+            refuses(w.launch)
+            execute.assert_not_called()
+    for flag in ('--settings', '--setting-sources=project', '--bare'):
+        with patch.object(w.sys, 'argv', ['claude', flag]), patch.object(os, 'execve') as execute:
+            refuses(w.launch)
+            execute.assert_not_called()
+    with patch.object(Path, 'exists', return_value=False), patch.object(Path, 'read_text', return_value=''), patch.object(os, 'execve') as execute:
         refuses(w.launch)
         execute.assert_not_called()
     # Real spawn entrypoint refuses bad accounts before touching repo or admission.

@@ -249,7 +249,7 @@ deploy(){
   chmod +x "$rel"/bin/*
   local prev=""; [[ -L "$CURRENT" ]] && prev=$(readlink -f "$CURRENT")
   switch_to "$rel"
-  { echo "sha: $REPO_SHA"; echo "date: $(date -u +%FT%TZ)"; echo "by: $(id -un)@$(hostname)"; echo "prev: ${prev:-none}"; } > "$rel/DEPLOYED"
+  { echo "sha: $REPO_SHA"; echo "date: $(date -u +%FT%TZ)"; echo "by: $(id -un)@$(hostname)"; echo "prev: ${prev:-none}"; echo "scripts-only: $SCRIPTS_ONLY"; } > "$rel/DEPLOYED"
   # smoke MUST run in a subshell: die() exits, and outside a subshell that exit
   # would kill the whole script before the rollback branch ever ran (QA finding)
   if ! (smoke); then
@@ -274,6 +274,10 @@ rollback(){
   local prev
   prev=$(sed -n 's/^prev: //p' "$CURRENT/DEPLOYED" 2>/dev/null)
   [[ -n "$prev" && -d "$prev" && "$prev" != "none" ]] || die "no previous release recorded"
+  # Restore the mode of the release being undone, before changing CURRENT.
+  SCRIPTS_ONLY=$(sed -n 's/^scripts-only: //p' "$CURRENT/DEPLOYED")
+  SCRIPTS_ONLY="${SCRIPTS_ONLY:-0}"  # pre-mode releases used full deployment
+  case "$SCRIPTS_ONLY" in 0|1) ;; *) die "invalid deployment mode" ;; esac
   switch_to "$prev"
   (smoke) || die "rolled back to $prev but smoke STILL fails — manual intervention needed"
   note "rolled back to $prev"

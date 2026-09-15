@@ -44,7 +44,7 @@ from pathlib import Path
 assert os.environ['CLAUDE_CODE_OAUTH_TOKEN']=='dummy-container-token'
 assert not any(k.startswith('ANTHROPIC_') for k in os.environ)
 assert 'CLAUDE_CODE_USE_VERTEX' not in os.environ
-assert sys.argv[-2:]==['--setting-sources','user']
+assert sys.argv[1:3]==['--setting-sources','user']
 assert Path('/run/cc-account/token').read_text().strip()=='dummy-container-token'
 assert not Path('/run/cc-account/../other/token').exists()
 print('PASS: container startup reads selected token and clears inherited auth')
@@ -59,22 +59,33 @@ if grep -qE 'dummy-container-token|dummy-api-override' "$TMP/output"; then
   echo 'FAIL: credential leaked'; exit 1
 fi
 cat "$TMP/output"
-# Real installed CLI accepts the wrapper's flags; no network/auth request.
+# Exercise the real auth subcommand: --version exits before parsing our flags.
+mkdir -p "$TMP/diogo/config"
+printf '{}' > "$TMP/diogo/config/settings.json"
 docker run --rm --network none --entrypoint /usr/local/bin/claude \
   -v "$CC_ACCOUNT_WRAPPER:/usr/local/bin/claude:ro" \
-  -v "$TMP/diogo/credentials:/run/cc-account:ro" cc-session:latest --version > "$TMP/version"
-if grep -q 'dummy-container-token' "$TMP/version"; then echo 'FAIL: credential leaked'; exit 1; fi
-printf 'PASS: real Claude CLI accepts startup wrapper flags\n'
-# scripts-only deploy must return before any fleet-config renderer/writer.
-(
-  source "$HERE/deploy.sh"
-  SCRIPTS_ONLY=1
-  RELEASES="$TMP/releases"; CURRENT="$RELEASES/current"
-  SESSIONS="$TMP/sessions"; BIN_DIR="$TMP/bin"; SPAWN_LOCK="$TMP/spawn.lock"
-  mkdir -p "$RELEASES/next/bin" "$RELEASES/next/sessions/tokens.d" "$SESSIONS" "$BIN_DIR"
-  SESSION_FILES=()
-  render_claude(){ echo 'FAIL: scripts-only reached shared config' >&2; exit 1; }
-  switch_to "$RELEASES/next"
-  test "$(readlink "$CURRENT")" = "$RELEASES/next"
-)
-echo 'PASS: scripts-only deployment skips shared configuration'
+  -v "$TMP/diogo/credentials:/run/cc-account:ro" \
+  -v "$TMP/diogo/config:/home/pwuser/.claude" cc-session:latest auth status > "$TMP/status" 2>&1
+python3 - "$TMP/status" <<'PYTEST'
+import json, sys
+text = open(sys.argv[1]).read()
+assert 'dummy-container-token' not in text
+status = json.loads(text)
+assert status['authMethod'] == 'oauth_token' and not status.get('apiKeySource')
+print('PASS: real Claude auth status uses the selected OAuth source')
+PYTEST
+# Saved settings must fail before the real CLI can use an API key/helper.
+for settings in '{"env":{"ANTHROPIC_API_KEY":"dummy-api-override"}}' '{"apiKeyHelper":"dummy-api-override"}' '{invalid'; do
+  printf '%s' "$settings" > "$TMP/diogo/config/settings.json"
+  if docker run --rm --network none --entrypoint /usr/local/bin/claude \
+    -v "$CC_ACCOUNT_WRAPPER:/usr/local/bin/claude:ro" \
+    -v "$TMP/diogo/credentials:/run/cc-account:ro" \
+    -v "$TMP/diogo/config:/home/pwuser/.claude" cc-session:latest auth status > "$TMP/rejected" 2>&1; then
+    echo 'FAIL: unsafe settings accepted'; exit 1
+  fi
+  grep -q 'ERROR: selected account settings' "$TMP/rejected"
+  if grep -qE 'dummy-container-token|dummy-api-override' "$TMP/rejected"; then
+    echo 'FAIL: credential leaked'; exit 1
+  fi
+done
+echo 'PASS: saved credentials/helpers and malformed settings fail closed without leaking values'

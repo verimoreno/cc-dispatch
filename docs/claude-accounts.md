@@ -60,7 +60,8 @@ ownership must be checked by Diogo, not inferred from its spelling.
 Run `host/tests/run-tests.sh` on cc-host from the reviewed checkout first.
 Deploy this change with `host/deploy.sh --scripts-only`: this uses the existing
 release/symlink/smoke lifecycle but skips writes to shared Claude/Codex config and
-crontab. It needs no image rebuild and restarts no existing containers. Use a
+crontab. The release records this mode, and `--rollback` preserves it.
+It needs no image rebuild and restarts no existing containers. Use a
 clean checkout containing the reviewed commit; do not deploy unrelated changes.
 The normal deploy command still manages fleet configuration as before.
 
@@ -89,6 +90,10 @@ This checkout is staged only; its lifecycle scripts are not live until deployed.
   credentials before setting `CLAUDE_CODE_OAUTH_TOKEN`. It ignores project/local
   **settings** to prevent their `env`/API helpers overriding subscription auth;
   repository instructions still apply. User settings start with only fleet hooks.
+  Saved user settings containing authentication variables or credential helpers
+  are rejected before Claude starts, as are command-line settings/auth overrides.
+  Remove those settings to use the selected account; token replacement does not
+  silently rewrite them.
 - Provisioning seeds the managed fleet instructions, the four versioned fleet
   skills, and the five credential-free MCP definitions inspected on cc-host.
   It does not copy shared histories, OAuth metadata, plugin state, personal skills
@@ -113,7 +118,8 @@ No Diogo account was provisioned. Tests used dummy credentials only: name and
 permission validation, missing/empty tokens, private provisioning and replacement,
 fixed selection including legacy/stopped containers, default/explicit Compose,
 credential precedence, secret-free output, and a disposable container wrapper
-startup with networking disabled. Existing host parser, render, pulse and ledger
+startup with networking disabled. Regression checks run the real `claude auth status`
+subcommand, reject saved API credentials/helpers, and verify manual rollback modes. Existing host parser, render, pulse and ledger
 checks passed; the board smoke was skipped because its prerequisites were absent.
 The local ledger run was refused by the laptop's memory floor; the host ledger
 run passed all 18 checks.

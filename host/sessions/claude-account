@@ -1,24 +1,50 @@
 #!/usr/bin/env python3
 """Load only the mounted owner's token, just before exec; no token in docker env/argv."""
+import json
 import os
 from pathlib import Path
 import sys
 
 
+def auth_override(name):
+    return name.startswith(('ANTHROPIC_', 'CLAUDE_CODE_OAUTH_', 'CLAUDE_CODE_USE_',
+                            'CLAUDE_CODE_API_KEY')) or name in (
+        'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SIMPLE',
+        'CLAUDE_CODE_BARE', 'HOME',
+    )
+
+
 def launch():
+    # These flags can restore settings/provider auth after the environment scrub.
+    if any(arg.split('=', 1)[0] in ('--settings', '--setting-sources', '--bare')
+           for arg in sys.argv[1:]):
+        sys.exit('ERROR: authentication/settings overrides are disabled for selected accounts')
+    try:
+        path = Path('/home/pwuser/.claude/settings.json')
+        settings = json.loads(path.read_text()) if path.exists() else {}
+        if not isinstance(settings, dict) or not isinstance(settings.get('env', {}), dict):
+            raise ValueError()
+        if any(auth_override(k) for k in settings.get('env', {})) or any(
+            k in settings for k in ('apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport',
+                                   'forceLoginMethod', 'forceLoginOrgUUID')
+        ):
+            raise ValueError()
+    except (OSError, ValueError):
+        # Never include JSON errors or values: these can contain credentials.
+        sys.exit('ERROR: selected account settings are invalid or contain authentication overrides')
+
     try:
         token = Path('/run/cc-account/token').read_text().strip()
         if not token or any(c.isspace() for c in token):
             raise ValueError()
     except (OSError, ValueError):
         sys.exit('ERROR: selected account token unavailable; ask its owner to reprovision it')
-    env = {k: v for k, v in os.environ.items() if not k.startswith((
-        'ANTHROPIC_', 'CLAUDE_CODE_OAUTH_', 'CLAUDE_CODE_USE_', 'CLAUDE_CODE_API_KEY',
-    )) and k not in ('CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SUBAGENT_MODEL')}
+    env = {k: v for k, v in os.environ.items() if not auth_override(k)}
+    env['HOME'] = '/home/pwuser'
     env['CLAUDE_CODE_OAUTH_TOKEN'] = token
     # Only our credential-free user settings; repo settings can inject API auth.
     os.execve('/home/pwuser/.npm-global/bin/claude',
-              ['claude', *sys.argv[1:], '--setting-sources', 'user'], env)
+              ['claude', '--setting-sources', 'user', *sys.argv[1:]], env)
 
 
 if __name__ == '__main__':
