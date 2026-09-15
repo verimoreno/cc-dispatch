@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""cc-pulse — fleet heartbeat, written by Claude Code hooks, read by cc-plan.
+
+One line per tool call / notification / turn-end into
+/opt/cc-notes/.pulse/<hostname>.jsonl. Hooks run OUTSIDE the model's context, so
+this is the mid-run progress feed that costs a lane nothing — the reason we do
+NOT ask lanes to write a note per step (context is what runs out first).
+
+Baked into the session image at /usr/local/bin/cc-pulse (root-owned), NOT shipped
+into the cc-auth volume: every lane mounts that volume read-write, so an
+executable living there would turn one prompt-injected lane into code execution
+on every other lane's next tool call. Wired up by host/fleet/settings.hooks.json,
+whose command tolerates this file being absent (containers older than the image
+that first carried it).
+
+Contract, precisely — a hook that speaks feeds its stderr into the agent's context
+and a hook that hangs used to stall the lane's loop, which are the costs this
+exists to avoid:
+  - the LANE never waits: the hook entries are declared `async`, so the agent
+    continues the moment it is spawned;
+  - this process always exits silently, within DEADLINE seconds, by its own alarm.
+    `async` does not enforce the runner's `timeout`, so without that alarm a hook
+    blocked on stdin or a wedged filesystem would live until session teardown, and
+    a long lane would accumulate them;
+  - what no design can bound: uninterruptible kernel I/O, and external termination
+    (the `|| true` in the hook command is the contract boundary the shell sees).
+
+Durability is best-effort by design, and the deadline is part of that: `_exit`
+skips the buffer flush, so a record cut short can leave an unterminated line —
+which costs that record AND the next append that joins onto it. cc-plan's reader
+skips unparseable lines, so the damage stops there; nothing in the artifact or
+release layer reads this file. A dropped pulse is a missing progress line, never
+a wrong answer about a lane.
+"""
+import fcntl, json, os, signal, sys, time
+
+PULSE = "/opt/cc-notes/.pulse"
+MAX = 200               # chars of target text kept per line
+MAX_INPUT = 1 << 20     # never read an unbounded hook payload
+ROTATE_BYTES = 1 << 20  # keep TAIL_LINES once a lane's file passes this
+TAIL_BYTES = 1 << 16    # bounded rotation read (not the whole file)
+LOCK_TRIES, LOCK_WAIT = 6, 0.02   # bounded waiting for the lock, then drop the line
+DEADLINE = 5            # seconds; self-enforced, because `async` waives the runner's
+FIELDS = ("file_path", "command", "pattern", "path", "url", "description", "prompt")
+
+
+def target(inp):
+    for k in FIELDS:
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip().replace("\n", " ")[:MAX]
+    return ""
+
+
+def rotate(f):
+    """Trim in place while holding the lock. Callers append under the same lock,
+    so no writer can lose a record to the truncate (the earlier version could
+    drop an unbounded burst)."""
+    if os.fstat(f.fileno()).st_size <= ROTATE_BYTES:
+        return
+    f.seek(-TAIL_BYTES, os.SEEK_END)
+    tail = f.read(TAIL_BYTES).split(b"\n", 1)[-1]   # bounded; drop the partial first line
+    f.seek(0); f.truncate(); f.write(tail)
+
+
+def main():
+    d = json.loads(sys.stdin.read(MAX_INPUT))
+    ev = d.get("hook_event_name") or "?"
+    rec = {"ts": int(time.time()), "ev": ev, "tool": d.get("tool_name") or "", "t": ""}
+    if ev == "Notification":
+        # the KIND is the point: only a genuine request for input is an ask —
+        # idle_prompt / auth_success / agent_completed are not questions
+        rec["nt"] = str(d.get("notification_type") or "")[:60]
+        rec["t"] = str(d.get("message") or "")[:MAX]
+    else:
+        rec["t"] = target(d.get("tool_input") or {})
+    os.makedirs(PULSE, exist_ok=True)
+    line = (json.dumps(rec) + "\n").encode()
+    path = os.path.join(PULSE, os.uname().nodename + ".jsonl")
+    if os.path.exists(path) and not os.path.isfile(path):
+        return          # a FIFO/device here would block open() and hang the lane
+    with open(path, "a+b") as f:
+        for _ in range(LOCK_TRIES):
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                time.sleep(LOCK_WAIT)
+        else:
+            return    # never append unlocked: that is the writer a concurrent
+                      # rotate would erase. A dropped telemetry line costs nothing.
+        rotate(f)
+        f.seek(0, os.SEEK_END); f.write(line)
+
+
+try:
+    # the whole run, not just one step: whatever is slow, this process is gone by
+    # DEADLINE and says nothing on the way out
+    signal.signal(signal.SIGALRM, lambda *_: os._exit(0))
+    signal.alarm(DEADLINE)
+    main()
+except BaseException:   # KeyboardInterrupt/SystemExit included: never speak, never fail
+    pass
+sys.exit(0)

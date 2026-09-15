@@ -9,6 +9,8 @@ echo "==== cc-plan parser fixtures"
 python3 "$HERE/test-plan-parser.py" || rc=1
 echo "==== deploy render_codex fixtures"
 bash "$HERE/test-render-codex.sh" || rc=1
+echo "==== cc-pulse hook fixtures"
+bash "$HERE/test-pulse.sh" || rc=1
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   echo "==== cc-ledger integration"
   bash "$HERE/test-ledger.sh" || rc=1

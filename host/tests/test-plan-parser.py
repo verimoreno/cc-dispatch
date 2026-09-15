@@ -186,8 +186,36 @@ class ResolveReleases(unittest.TestCase):
     def test_from_restricts_source_and_self_never_matches(self):
         a = sess("a", "done", unblocks=[self.claim("api", verified=True)])
         b = sess("b", "blocked", unblocks=[self.claim("api", verified=True)], waits=[{"name": "api", "from": "c"}])
-        rel = ccplan.resolve_releases([a, b], verify=True, contradictions=[])
+        c = sess("c", "working")
+        rel = ccplan.resolve_releases([a, b, c], verify=True, contradictions=[])
         self.assertEqual(rel, []); self.assertEqual(b["waits"][0]["resolution"], "open")
+
+    def test_wait_on_a_human_is_an_ask_not_an_open_wait(self):
+        """Nothing in the plan can produce it, so it must never look pending."""
+        a = sess("a", "done", unblocks=[self.claim("api", verified=True)])
+        b = sess("b", "blocked", waits=[{"name": "which-db", "from": "orchestrator"}])
+        errs = []
+        rel = ccplan.resolve_releases([a, b], verify=True, contradictions=[], errors=errs)
+        self.assertEqual(rel, []); self.assertIsNone(b["release"])
+        self.assertEqual(b["waits"][0]["resolution"], "ask")
+        self.assertEqual(errs, [])                       # a named human is not a typo
+        asks = ccplan.collect_asks([a, b])
+        self.assertEqual([(x["session"], x["kind"], x["name"]) for x in asks],
+                         [("b", "wait", "which-db")])
+
+    def test_wait_on_an_unknown_session_is_an_ask_and_a_parser_error(self):
+        b = sess("b", "blocked", waits=[{"name": "api", "from": "typoo"}])
+        errs = []
+        ccplan.resolve_releases([b], verify=True, contradictions=[], errors=errs)
+        self.assertEqual(b["waits"][0]["resolution"], "ask")
+        self.assertEqual(len(errs), 1); self.assertIn("typoo", errs[0])
+
+    def test_contradictions_sort_worst_and_oldest_first(self):
+        cs = [{"kind": "done-unverified", "session": "x"},
+              {"kind": "blocked-untyped", "session": "y", "age_min": 10},
+              {"kind": "blocked-untyped", "session": "z", "age_min": 20000},
+              {"kind": "silent", "session": "w", "age_min": 30}]
+        self.assertEqual([c["session"] for c in ccplan.sort_contradictions(cs)], ["w", "z", "y", "x"])
 
     def test_planned_row_ready_when_deps_done_and_verified(self):
         a = sess("a", "done", unblocks=[self.claim("api", verified=True)])
@@ -258,6 +286,122 @@ class InitPlan(unittest.TestCase):
                 with self.assertRaises(ValueError): ccplan.init_plan("Bad_Id")
             finally:
                 ccplan.NOTES_ROOT = old
+
+
+class Pulse(unittest.TestCase):
+    """The hook-written heartbeat — the mid-run signal notes cannot give."""
+
+    def write(self, tmp, name, lines):
+        os.makedirs(os.path.join(tmp, ".pulse"), exist_ok=True)
+        with open(os.path.join(tmp, ".pulse", f"{name}.jsonl"), "w") as f:
+            f.write("".join(l + "\n" for l in lines))
+
+    def test_tail_torn_lines_and_dialog_detection(self):
+        import json, tempfile
+        now = 1_000_000
+        with tempfile.TemporaryDirectory() as tmp:
+            old = ccplan.PULSE_DIR; ccplan.PULSE_DIR = os.path.join(tmp, ".pulse")
+            try:
+                self.assertIsNone(ccplan.read_pulse("nobody", now))
+                self.write(tmp, "a", [
+                    '{"ts": 999000, "ev": "PostToolUse", "tool": "Bash", "t": "pnpm test"}',
+                    'not json at all',                      # rotate race: survivable
+                    json.dumps({"ts": now - 120, "ev": "PostToolUse", "tool": "Edit", "t": "src/x.ts"}),
+                ])
+                p = ccplan.read_pulse("a", now)
+                self.assertEqual((p["age_min"], p["events"], p["ask"]), (2, 2, None))
+                self.assertEqual(p["recent"][-1]["tool"], "Edit")
+                # a REQUEST with nothing after it = sitting on a dialog
+                self.write(tmp, "b", [json.dumps({"ts": now - 60, "ev": "PostToolUse", "tool": "Bash", "t": "ls"}),
+                                      json.dumps({"ts": now - 30, "ev": "Notification",
+                                                  "nt": "permission_prompt", "t": "needs permission"})])
+                self.assertEqual(ccplan.read_pulse("b", now)["ask"], "needs permission")
+                # every kind that means "a human must act" — the elicitation pair is
+                # built by a factory, so it is absent from the literal assignments
+                for nt in ("permission_prompt", "worker_permission_prompt", "agent_needs_input",
+                           "elicitation_dialog", "elicitation_url_dialog"):
+                    self.write(tmp, "b2", [json.dumps({"ts": now, "ev": "Notification",
+                                                       "nt": nt, "t": "an MCP server needs your input"})])
+                    self.assertIsNotNone(ccplan.read_pulse("b2", now)["ask"], nt)
+                # ... but a tool call after it means the agent moved on
+                self.write(tmp, "c", [json.dumps({"ts": now - 60, "ev": "Notification",
+                                                  "nt": "permission_prompt", "t": "needs permission"}),
+                                      json.dumps({"ts": now - 30, "ev": "PostToolUse", "tool": "Bash", "t": "ls"})])
+                self.assertIsNone(ccplan.read_pulse("c", now)["ask"])
+                # ... and an ANNOUNCEMENT is never an ask: idle_prompt after a
+                # finished turn used to park done lanes in the queue forever
+                for nt in ("idle_prompt", "agent_completed", "auth_success",
+                           "elicitation_complete", "elicitation_response", "push_notification",
+                           "computer_use_exit", "quota_auto_resume_fired"):
+                    self.write(tmp, "d", [json.dumps({"ts": now - 30, "ev": "Notification",
+                                                      "nt": nt, "t": "Claude is waiting"})])
+                    self.assertIsNone(ccplan.read_pulse("d", now)["ask"], nt)
+                # a record with no nt at all falls back to the message — and only
+                # to an unambiguous one: "waiting for your input" is ALSO how the
+                # idle announcement reads, so it must not count
+                self.write(tmp, "e", [json.dumps({"ts": now, "ev": "Notification", "t": "needs your permission"})])
+                self.assertIsNotNone(ccplan.read_pulse("e", now)["ask"])
+                self.write(tmp, "e2", [json.dumps({"ts": now, "ev": "Notification",
+                                                   "t": "Claude is waiting for your input"})])
+                self.assertIsNone(ccplan.read_pulse("e2", now)["ask"])
+                # a lane-writable store can hold wrong TYPES; projection must survive
+                self.write(tmp, "f", [json.dumps({"ts": now, "ev": "Notification",
+                                                  "nt": "permission_prompt", "t": {"x": 1}})])
+                self.assertIsInstance(ccplan.read_pulse("f", now)["ask"], str)
+                # one whole record inside the window is not a clipped first line
+                self.write(tmp, "g", [json.dumps({"ts": now, "ev": "Stop", "tool": "", "t": ""})])
+                self.assertEqual(ccplan.read_pulse("g", now)["events"], 1)
+            finally:
+                ccplan.PULSE_DIR = old
+
+    def test_window_activity_is_the_clock_not_session_activity(self):
+        """session_activity freezes for a detached pane — measured 22min stale on
+        a session whose window clock read now."""
+        seen = {}
+        old = ccplan.sh
+        ccplan.sh = lambda cmd, **kw: seen.update(cmd=cmd) or "s1 100\ns1 200\ns2 50\nbad line\n"
+        try:
+            act = ccplan.tmux_activity()
+        finally:
+            ccplan.sh = old
+        self.assertIn("list-windows", seen["cmd"])
+        self.assertIn("#{window_activity}", " ".join(seen["cmd"]))
+        self.assertEqual(act, {"s1": 200, "s2": 50})   # newest window per session
+
+
+class CheckRuns(unittest.TestCase):
+    """CI is the fact behind the note's "CI green" claim — and must only ever be
+    narrower than the truth: a partial or unreadable answer is `unknown`."""
+
+    def runs(self, body, code="200"):
+        import json
+        old = ccplan.sh
+        ccplan.sh = lambda cmd, **kw: None if body is None else json.dumps(body) + "\n" + code
+        try:
+            return ccplan.check_runs("o/r", "a" * 40, "tok")
+        finally:
+            ccplan.sh = old
+
+    def r(self, status, conclusion=None):
+        return {"status": status, "conclusion": conclusion}
+
+    def test_classification(self):
+        self.assertEqual(self.runs({"check_runs": []}), "none")
+        self.assertEqual(self.runs({"check_runs": [self.r("completed", "success")]}), "pass")
+        self.assertEqual(self.runs({"check_runs": [self.r("completed", "skipped")]}), "pass")
+        self.assertEqual(self.runs({"check_runs": [self.r("queued")]}), "pending")
+        # a known failure outranks a queued sibling — "pending" would hide it
+        self.assertEqual(self.runs({"check_runs": [self.r("completed", "failure"), self.r("queued")]}), "fail")
+
+    def test_partial_or_unreadable_is_unknown_never_none(self):
+        self.assertEqual(self.runs(None), "unknown")                          # transport
+        self.assertEqual(self.runs({"message": "Resource not accessible"}, "403"), "unknown")
+        self.assertEqual(self.runs({"message": "rate limited"}, "429"), "unknown")
+        # a 200 whose body is an error doc must not read as "no CI"
+        self.assertEqual(self.runs({"message": "nope"}), "unknown")
+        # more runs than this page returned: never call that pass
+        self.assertEqual(self.runs({"total_count": 101,
+                                    "check_runs": [self.r("completed", "success")] * 100}), "unknown")
 
 
 class ReviewRegressions(unittest.TestCase):

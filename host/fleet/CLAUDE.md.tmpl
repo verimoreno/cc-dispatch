@@ -49,6 +49,20 @@ in this container, this protocol doesn't apply — skip it.)
   with no typed WAITS is `blocked-untyped` and will only ever be released by a human.
   Filing a schema request in the repo still applies where your brief says so — WAITS is
   the note-side signal, the request file is the repo-side one.
+- **Asking a human — `from=orchestrator`.** You have no interactive user: nobody is
+  watching your pane, so a question asked in a dialog is a lane that has stopped. When
+  you need a DECISION or something only a human can do (a secret, an env, a call on
+  scope), write the note instead:
+
+      STATUS: blocked
+      WAITS: <short-slug> from=orchestrator
+      <the question, and what you would do absent an answer>
+
+  `from=orchestrator` (also `veri`, `human`) is an **ask**: the board queues it under
+  "Waiting on you" with its age, and the answer arrives as a prompt in this session —
+  treat it as a return to your loop. Nothing in the plan can produce it, so it is never
+  auto-released; that is the point. Prefer the ask you can proceed without: state your
+  assumption, keep working, and let the answer correct you.
 - **HANDOFF — the five lines the next session needs.** Your final `STATUS: done` entry
   carries a `HANDOFF:` block (max 12 lines, ends at a blank line or the next keyword):
   what changed, what is NOT done, gotchas, and where the artifact lives. This block is
@@ -62,6 +76,9 @@ in this container, this protocol doesn't apply — skip it.)
 - **When to write**: when you start (STATUS: working + your understanding of the task), at
   meaningful milestones or surprising discoveries, when blocked (STATUS: blocked + typed
   WAITS), and a final `STATUS: done` entry with typed UNBLOCKS + a HANDOFF block.
+  Do NOT write a note per step: your progress is already reported for you — a hook logs
+  every tool call to the pulse the board reads, at no cost to your context. Notes are for
+  what the hook cannot see: what you decided, what you found, what the next lane needs.
 - Timestamps in UTC: `date -u +%FT%TZ`.
 
 # Session workflow (v1) — how to execute your task

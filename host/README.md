@@ -11,6 +11,13 @@ directory existed these files were hand-edited on the host with no history
     sessions/             docker-compose.yml, Dockerfile, CC-CONTAINER.md,
                           tokens.d/ (opt-in deploy-token overrides), env.template
     fleet/CLAUDE.md.tmpl  managed region of the fleet-wide CLAUDE.md (cc-auth volume)
+    fleet/settings.hooks.json  the "hooks" key of the fleet settings.json (cc-auth)
+    sessions/cc-pulse     the heartbeat every lane's hooks write, read by cc-plan.
+                          COPYed into the image at /usr/local/bin (root-owned): the
+                          cc-auth volume is lane-writable, so an executable there
+                          would let one injected lane run code in all the others.
+                          Changing it needs a rebuild — `cd /opt/cc-sessions &&
+                          docker compose build` — and only NEW containers get it.
     crontab.snippet       managed block of veri's crontab on the host
     deploy.sh             deploy / --check / --rollback / --list (see header)
 
@@ -36,6 +43,8 @@ drift detector — run it when something on the host behaves unexpectedly.
   its tool policy IS managed, via `fleet/codex-mcp.toml.tmpl`)
 - agent-deck install + `~/.agent-deck/config.toml`
 - `/opt/cc-notes` (plan store; mirrored to github.com/verimoreno/cc-notes) and `/opt/cc-data`
+  — except `.gitignore`, which deploy.sh keeps holding `.pulse/`: the hook feed lives
+  in the store (the only mount every lane shares) and must stay out of its hourly commit
 - docker engine, tmux, agent-deck binaries
 
 ## CC_TOKENS=gcp

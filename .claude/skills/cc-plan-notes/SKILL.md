@@ -129,6 +129,25 @@ ssh cc-host 'cd /opt/cc-notes/PLAN_ID && \
 - Latest `STATUS:` per file = that session's self-reported state. Cross-check
   against [[cc-supervise]] (pane/PR/CI truth) when it matters — notes are what
   the agent *believes*, cc-supervise is what *is*.
+- **`asks[]` first — the only queue that cannot resolve itself.** A `WAITS` whose
+  `from=` names a human (`orchestrator`, `veri`, `human`) or no roster session is
+  an *ask*, not a pending artifact: nothing in the plan will ever produce it.
+  Same for a `blocked` entry with no typed WAITS, and for a lane the pulse caught
+  sitting at a dialog. Answer with `cc-launch <session> --prompt "..."` into the
+  resident session — it treats the answer as a return to its loop. Oldest first;
+  `age_min` is on every row because a 14-day-old ask used to look like a 5-minute one.
+- **`pulse` / `pane_idle_min` = the mid-run signal.** Notes land every ~30min at
+  best (p90 85min), so "STATUS: working" answers nothing about *now*. The pulse is
+  written by a Claude Code hook in every lane (`host/fleet/pulse-hook.py` →
+  `/opt/cc-notes/.pulse/<session>.jsonl`), which runs outside the model's context
+  and therefore costs the lane nothing; `pane_idle_min` comes from tmux. Read
+  `pulse.recent` for what it is doing right now. A `silent` contradiction — no tool
+  call and no pane output for 20min while resident — is the lane to look at; a
+  quiet *note* with a live pulse is just a lane working.
+- **Never merge on a note's word about CI.** `--verify` now reads GitHub check-runs
+  and stamps `checks: pass|fail|pending|none` on each claim; `checks-fail` /
+  `checks-pending` are contradictions of their own. A note saying "CI green" is
+  still only a claim — the field is the fact.
 - `STATUS: blocked` → the entry should carry typed `WAITS:` lines (protocol v2);
   `cc-plan json` resolves each against every UNBLOCKS in the plan and reports
   `open | satisfied | unverified | refuted` per wait, and lists the sessions
@@ -154,7 +173,8 @@ session's `WAITS:` names the artifact it needs by the same name:
 ```
 UNBLOCKS: <artifact-name> pr repo=<owner/name> number=<N> head=<40-hex-sha>
 UNBLOCKS: <artifact-name> commit repo=<owner/name> sha=<40-hex-sha> path=<repo-relative-path>
-WAITS:    <artifact-name> from=<session-name|any>
+WAITS:    <artifact-name> from=<session-name|any>        artifact — auto-released
+WAITS:    <question-slug>  from=orchestrator             ask — only you can answer
 HANDOFF:  (block, ≤12 lines) what the consumer of that artifact must know
 ```
 
