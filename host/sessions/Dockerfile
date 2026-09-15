@@ -110,14 +110,6 @@ RUN printf '#!/bin/bash\nexec claude --dangerously-skip-permissions "$@"\n' > /u
     printf '#!/bin/bash\nexec gemini --yolo "$@"\n' > /usr/local/bin/gmd && chmod +x /usr/local/bin/gmd && \
     printf '#!/bin/bash\n# ocd — OpenCode auto-approve; forwards OPENCODE_MODE->--agent, OPENCODE_MODEL->--model\nexec opencode --auto ${OPENCODE_MODE:+--agent "$OPENCODE_MODE"} ${OPENCODE_MODEL:+--model "$OPENCODE_MODEL"} "$@"\n' > /usr/local/bin/ocd && chmod +x /usr/local/bin/ocd
 
-# ---- The plan-notes pulse hook (see host/sessions/cc-pulse) ----
-# Baked in, root-owned, 755: every lane mounts the cc-auth volume read-write, so
-# an executable shipped THERE would let one prompt-injected lane run code in all
-# the others. Bump the image (docker compose build) to roll out a change; only
-# containers spawned from the new image carry it, and the hook command in
-# fleet/settings.hooks.json is written to no-op in older ones.
-COPY --chown=root:root cc-pulse /usr/local/bin/cc-pulse
-RUN chmod 755 /usr/local/bin/cc-pulse && python3 -c 'import ast;ast.parse(open("/usr/local/bin/cc-pulse").read())'
 USER pwuser
 
 # ---- Persistent dirs (mounted as named volumes at runtime) ----
@@ -144,4 +136,20 @@ RUN mkdir -p $ANDROID_HOME/cmdline-tools && cd $ANDROID_HOME/cmdline-tools && \
     latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" && \
     chown -R pwuser:pwuser $ANDROID_HOME
 ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+USER pwuser
+
+# ---- The plan-notes pulse hook (see host/sessions/cc-pulse) ----
+# Baked in, root-owned, 755: every lane mounts the cc-auth volume read-write, so
+# an executable shipped THERE would let one prompt-injected lane run code in all
+# the others. Bump the image (docker compose build) to roll out a change; only
+# containers spawned from the new image carry it, and the hook command in
+# fleet/settings.hooks.json is written to no-op in older ones.
+#
+# LAST layer on purpose. Everything above it — including the Android SDK download
+# — stays cached when only this file changes, so rolling out a hook edit is a
+# seconds-long one-layer build that cannot disturb a toolchain layer. A rebuild
+# never touches running containers either; they hold the old image by id.
+USER root
+COPY --chown=root:root cc-pulse /usr/local/bin/cc-pulse
+RUN chmod 755 /usr/local/bin/cc-pulse && python3 -c 'import ast;ast.parse(open("/usr/local/bin/cc-pulse").read())'
 USER pwuser
