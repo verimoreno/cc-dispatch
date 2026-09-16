@@ -1,0 +1,7 @@
+{
+  "chrome-devtools": {"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@1.6.0","--headless","--isolated","--executablePath","/ms-playwright/chromium-1148/chrome-linux/chrome","--chrome-arg=--no-sandbox","--chrome-arg=--disable-setuid-sandbox"],"env":{}},
+  "supabase": {"type":"stdio","command":"npx","args":["@supabase/mcp-server-supabase"],"env":{}},
+  "playwright": {"type":"stdio","command":"npx","args":["@playwright/mcp@0.0.78","--browser","chromium","--headless","--no-sandbox","--executable-path","/ms-playwright/chromium-1148/chrome-linux/chrome"],"env":{}},
+  "drawio": {"type":"stdio","command":"npx","args":["-y","@drawio/mcp"],"env":{}},
+  "notion": {"type":"http","url":"https://mcp.notion.com/mcp"}
+}

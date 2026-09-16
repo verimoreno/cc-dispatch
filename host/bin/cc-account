@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Private owner-provisioned Claude accounts; never output credential contents."""
+import fcntl
+import getpass
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path('/opt/cc-data/accounts')
+BINDINGS = Path('/opt/cc-data/session-accounts')
+FLEET = Path(__file__).resolve().parents[1] / 'fleet'
+
+
+class AccountError(Exception):
+    pass
+
+
+def account_path(alias):
+    if not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', alias):
+        raise AccountError('invalid account name (use lowercase letters, digits, _ or -; start with a letter)')
+    return ROOT / alias
+
+
+def private(path, directory=False):
+    s = path.lstat()
+    if not (stat.S_ISDIR(s.st_mode) if directory else stat.S_ISREG(s.st_mode)):
+        raise AccountError('account path must be a regular file or directory')
+    if path.is_symlink() or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) != (0o700 if directory else 0o600):
+        raise AccountError('account files must be owned by the host operator, directories 0700 and files 0600')
+
+
+def token_at(path):
+    private(path)
+    token = path.read_text().strip()
+    if not token or any(c.isspace() for c in token):
+        raise AccountError('missing, empty or malformed account token; run cc-account provision <alias> privately')
+    return token
+
+
+def check(alias):
+    p = account_path(alias)
+    private(ROOT, True)
+    private(p, True)
+    private(p / 'credentials', True)
+    token_at(p / 'credentials/token')
+    private(p / 'config', True)
+    private(p / 'claude.json')
+    return p
+
+
+def provision(alias):
+    p = account_path(alias)
+    os.umask(0o077)
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private(ROOT, True)
+    p.mkdir(mode=0o700, exist_ok=True)
+    private(p, True)
+    (p / 'credentials').mkdir(mode=0o700, exist_ok=True)
+    private(p / 'credentials', True)
+    # Require a real terminal: getpass's echoing stdin fallback is unsafe here.
+    with open('/dev/tty', 'w') as tty:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', getpass.GetPassWarning)
+            token = getpass.getpass('Paste your Claude setup-token (hidden): ', stream=tty).strip()
+    if not token or any(c.isspace() for c in token):
+        raise AccountError('empty or malformed token; nothing stored')
+    config = p / 'config'
+    if not config.exists():
+        config.mkdir(mode=0o700)
+        shutil.copyfile(FLEET / 'CLAUDE.md.tmpl', config / 'CLAUDE.md')
+        (config / 'settings.json').write_text(json.dumps({
+            'hooks': json.loads((FLEET / 'settings.hooks.json').read_text()),
+            'skipDangerousModePermissionPrompt': True,
+        }))
+        skills = FLEET / 'skills'
+        if not skills.exists():
+            skills = FLEET.parents[1] / '.claude/skills'
+        shutil.copytree(skills, config / 'skills')
+    private(config, True)
+    if (p / 'claude.json').is_symlink():
+        raise AccountError('account config must not be a symlink')
+    if not (p / 'claude.json').exists():
+        (p / 'claude.json').write_text(json.dumps({
+            'hasCompletedOnboarding': True,
+            'mcpServers': json.loads((FLEET / 'account-mcp.json').read_text()),
+        }))
+    private(p / 'claude.json')
+    # Directory mount + atomic replacement lets existing containers read a rotated token.
+    fd, tmp = tempfile.mkstemp(dir=p / 'credentials')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(token + '\n')
+        os.replace(tmp, p / 'credentials/token')
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    print('Account provisioned. Restart Claude in this account’s session to load the token.')
+
+
+def match(session, alias, pin=False):
+    if alias:
+        account_path(alias)
+    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}', session):
+        raise AccountError('invalid session name')
+    record = BINDINGS / session
+    if record.exists() and record.read_text().strip() != alias:
+        raise AccountError('session/account mismatch; use the account selected at spawn')
+    # ps -a distinguishes absent containers from an unavailable Docker daemon.
+    names = subprocess.check_output(['docker', 'ps', '-a', '--format', '{{.Names}}'], text=True).splitlines()
+    if session in names:
+        selected = subprocess.check_output(['docker', 'inspect', '--format',
+            '{{index .Config.Labels "com.fractional.cc-account"}}', session], text=True).strip()
+        selected = '' if selected == '<no value>' else selected
+        if selected != alias:
+            raise AccountError('session/account mismatch; use the account selected at spawn')
+
+    if pin:
+        os.umask(0o077)
+        BINDINGS.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with record.open('a+') as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            saved = f.read()
+            if saved and saved.strip() != alias:
+                raise AccountError('session/account mismatch; use the account selected at spawn')
+            if not saved:
+                f.write(alias + '\n')
+
+
+def main():
+    command, alias = sys.argv[1:3]
+    if command == 'provision':
+        provision(alias)
+    elif command == 'check':
+        print(check(alias))
+    elif command in ('match', 'pin'):
+        match(alias, sys.argv[3], pin=command == 'pin')
+    else:
+        raise AccountError('usage: cc-account provision|check <alias> | match <session> <alias>')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except AccountError as exc:
+        print('ERROR: ' + str(exc), file=sys.stderr)
+        sys.exit(1)
+    except (OSError, ValueError, subprocess.SubprocessError, getpass.GetPassWarning):
+        # No exception text: a parser/OS error may contain secret input.
+        print('ERROR: account validation failed (invalid name, unknown account, missing/empty token, unsafe permissions, or session/account mismatch). Run cc-account provision <alias> privately if needed.', file=sys.stderr)
+        sys.exit(1)

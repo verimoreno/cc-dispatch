@@ -62,4 +62,34 @@ if grep -qE 'render_(claude|codex) *\| *docker run' "$HERE/../deploy.sh"; then
   echo "FAIL render piped straight into its own file's writer — render to a var first"; rc=1
 else echo "ok   no render piped into its own writer"; fi
 
+# Both deployment and manual rollback must preserve scripts-only's no-write mode.
+(
+  set -e
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  RELEASES="$tmp/releases"; CURRENT="$RELEASES/current"
+  SESSIONS="$tmp/sessions"; BIN_DIR="$tmp/bin"; SPAWN_LOCK="$tmp/spawn.lock"
+  mkdir -p "$RELEASES/new/bin" "$RELEASES/new/sessions/tokens.d" "$RELEASES/old/bin" \
+    "$RELEASES/old/sessions/tokens.d" "$SESSIONS" "$BIN_DIR"
+  touch "$RELEASES/new/bin/cc-test" "$RELEASES/old/bin/cc-test"
+  SESSION_FILES=()
+  render_claude(){ echo 'FAIL: scripts-only reached shared config' >&2; exit 1; }
+  smoke(){ :; }
+  SCRIPTS_ONLY=1
+  switch_to "$RELEASES/new"
+  printf 'prev: %s\nscripts-only: 1\n' "$RELEASES/old" > "$CURRENT/DEPLOYED"
+  SCRIPTS_ONLY=0 # a new CLI invocation starts with the default
+  rollback
+  test "$SCRIPTS_ONLY" = 1
+  test "$(readlink "$CURRENT")" = "$RELEASES/old"
+  # Legacy metadata and ordinary full deploys retain full rollback behavior.
+  switch_to(){ test "$SCRIPTS_ONLY" = 0; }
+  printf 'prev: %s\n' "$RELEASES/new" > "$CURRENT/DEPLOYED"
+  rollback
+  printf 'prev: %s\nscripts-only: 0\n' "$RELEASES/new" > "$CURRENT/DEPLOYED"
+  rollback
+  echo 'ok   rollback restores deployment mode (scripts-only, full, legacy)'
+)
+[[ $? == 0 ]] || rc=1
+
 exit $rc

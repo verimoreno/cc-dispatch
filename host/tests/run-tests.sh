@@ -5,6 +5,8 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rc=0
+python3 "$HERE/test-account.py" || rc=1
+bash "$HERE/test-account-compose.sh" || rc=1
 echo "==== cc-plan parser fixtures"
 python3 "$HERE/test-plan-parser.py" || rc=1
 echo "==== deploy render_codex fixtures"

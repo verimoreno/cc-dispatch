@@ -1,0 +1,23 @@
+# Explicit-account sessions exclude all shared agent authentication/config volumes.
+services:
+  cc-session:
+    volumes: !override
+      - ${CC_ACCOUNT_DIR:?}/config:/home/pwuser/.claude
+      - ${CC_ACCOUNT_DIR:?}/claude.json:/home/pwuser/.claude.json
+      - ${CC_ACCOUNT_DIR:?}/credentials:/run/cc-account:ro
+      - ${CC_ACCOUNT_WRAPPER:?}:/usr/local/bin/claude:ro
+      - cc-npm:/home/pwuser/.npm
+      - cc-playwright:/home/pwuser/.cache/ms-playwright
+      - cc-tiktoken:/home/pwuser/.cache/tiktoken
+      - cc-pip-audit:/home/pwuser/.cache/pip-audit
+      - cc-gradle:/home/pwuser/.gradle
+      - ${HOME}/.ssh:/home/pwuser/.ssh:ro
+      - ${HOME}/.gitconfig:/home/pwuser/.gitconfig:ro
+      - /opt/cc-notes:/opt/cc-notes
+      - ${REPO_DIR}:${REPO_DIR}
+      - ${WORKTREE_PATH}:/home/pwuser/work
+    environment:
+      CC_ACCOUNT: ${CC_ACCOUNT:?}
+      PATH: /usr/local/bin:/home/pwuser/.npm-global/bin:/home/pwuser/.local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools
+    labels:
+      com.fractional.cc-account: ${CC_ACCOUNT:?}
