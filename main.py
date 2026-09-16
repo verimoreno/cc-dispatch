@@ -612,15 +612,31 @@ def list_agents():
     return _LAUNCHERS
 
 
+@app.get("/api/accounts")
+def list_accounts():
+    """Account aliases only; cc-account never prints credential contents."""
+    result = _run(["cc-account", "list"])
+    if result.returncode != 0:
+        return []
+    return [a for a in result.stdout.splitlines() if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", a)]
+
+
 @app.post("/api/sessions")
 def create_session(body: dict, background_tasks: BackgroundTasks):
     repo = body.get("repo", "").strip()
     branch = body.get("branch", "").strip()
     agent = (body.get("agent") or "claude").strip().lower()
+    account = (body.get("account") or "").strip().lower()
     if not repo or not branch:
         raise HTTPException(400, "repo and branch required")
     if agent not in _LAUNCHERS:
         raise HTTPException(400, f"agent must be one of: {', '.join(_LAUNCHERS)}")
+    if account and not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", account):
+        raise HTTPException(400, "account has invalid characters")
+    if account:
+        check = _run(["cc-account", "check", account])
+        if check.returncode != 0:
+            raise HTTPException(400, "unknown or unprovisioned account")
     # repo is either "owner/name" or a bare "name" (cc-spawn prepends its default
     # org for the bare form). Validate before it reaches a shell.
     if not (_REPO_RE.fullmatch(repo) or _REPO_BARE_RE.fullmatch(repo)):
@@ -635,13 +651,14 @@ def create_session(body: dict, background_tasks: BackgroundTasks):
     # Spawn in a detached tmux window on the target host. Quote every field that
     # reaches the shell — matching _spawn_and_inject — so repo/branch can't inject
     # commands even though they're now regex-constrained (defense in depth).
-    spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
+    prefix = f"CC_ACCOUNT={shlex.quote(account)} " if account else ""
+    spawn_cmd = f"{prefix}cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
     window_id = _spawn_window(spawn_cmd, branch)
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
     _PICKED_AGENTS[branch] = agent
     background_tasks.add_task(_launch_agent, branch, agent, window_id)
-    return {"ok": True, "agent": agent}
+    return {"ok": True, "agent": agent, "account": account or None}
 
 
 def _wait_for_session(branch: str) -> Optional[dict]:
