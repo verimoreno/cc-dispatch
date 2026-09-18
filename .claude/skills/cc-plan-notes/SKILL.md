@@ -159,8 +159,8 @@ ssh cc-host 'cd /opt/cc-notes/PLAN_ID && \
   it's unobserved — check it with cc-supervise.
 - `done-but-resident` in the contradictions = the work is finished (and ideally
   verified) but the container still occupies an admission slot. Reap it:
-  `cc-stop <name>` then `cc-cleanup-worktree <repo> <branch>` — sessions are
-  cattle, and the fleet budget only frees up when you actually reap.
+  `cc-reap <name>` (container + deck entry + tmux + worktree + ledger) — sessions
+  are cattle, and the fleet budget only frees up when you actually reap.
 
 For unattended watching, run this under `/loop` (e.g. `/loop 10m check plan
 PLAN_ID and spawn any newly-unblocked sessions`).
@@ -237,7 +237,7 @@ ssh cc-host 'cd /opt/cc-notes && \
     commit -q -m "close: PLAN_ID"'
 ```
 
-Sessions themselves are reaped separately via cc-cleanup-sessions — archiving
+Sessions themselves are reaped separately via `cc-reap <name>...` — archiving
 the plan does not tear anything down.
 
 ## Notes & guardrails

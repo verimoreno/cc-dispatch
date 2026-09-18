@@ -149,8 +149,13 @@ The same data is visual at `http://cc-host:7822/plans.html` (Plan Board).
 - **Never call a session stuck on the first tick.** "Idle + no progress" only
   means stuck if it persists across ticks. On a one-shot run, report it as
   `idle — recheck` rather than `stuck`.
+- **Reaping is `cc-reap <name>...` on cc-host** — one command for container, deck
+  entry, tmux, worktree and ledger. `cc-stop` alone leaves a dead `stopped`/`error`
+  entry on the deck, which is what "I reaped it but still see it" means. `agent-deck
+  ls` rows with status `stopped`/`error` and no container are dead: list them as
+  reapable, and `cc-teardown-idle --execute` clears them all at once.
 - Reuses the SSH-to-`cc-host` + `agent-deck ls --json` conventions from
-  [[cc-cleanup-sessions]]. Session→worktree→tmux mapping per `cc-docker-host-setup`.
+  [[cc-spawn-session]]. Session→worktree→tmux mapping per `cc-docker-host-setup`.
 
 ## Graduating to auto-fix (v2 — do NOT enable without Veri's explicit say-so)
 

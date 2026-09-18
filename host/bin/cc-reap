@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# cc-reap — reap a session COMPLETELY: container, agent-deck entry, tmux window,
+# worktree, ledger. Resolves everything from the session name; the branch stays.
+#
+# Usage:
+#   cc-reap <session-name>...        # reap each named session
+#   cc-reap --dry-run <name>...      # print the plan, change nothing
+#   cc-reap --force <name>...        # remove a DIRTY worktree too
+#
+# cc-stop only stops the container (restart-friendly); cc-cleanup-worktree only
+# removes the worktree + agent-deck entry. This is the union, by name, so
+# "reaped" never again means "stopped but still on the deck".
+set -uo pipefail
+
+BASE="${CC_BASE_DIR:-$HOME/Fractional}"
+DRY=0; FORCE=0; NAMES=()
+for a in "$@"; do
+  case "$a" in
+    --dry-run|-n) DRY=1 ;;
+    --force|-f)   FORCE=1 ;;
+    -h|--help)    sed -n '2,12p' "$0"; exit 0 ;;
+    *)            NAMES+=("$a") ;;
+  esac
+done
+[ "${#NAMES[@]}" -gt 0 ] || { echo "usage: cc-reap [--dry-run] [--force] <session-name>..." >&2; exit 2; }
+
+run(){ [ "$DRY" = 1 ] || "$@"; }                     # no-op in dry-run
+say(){ if [ "$DRY" = 1 ]; then echo "  would: $*"; else echo "  $*"; fi; }
+
+deck_field(){ # name field -> value from agent-deck, empty if absent
+  agent-deck list -json 2>/dev/null | python3 -c '
+import json,sys
+name,field=sys.argv[1],sys.argv[2]
+d=json.load(sys.stdin); s=d if isinstance(d,list) else d.get("sessions",[])
+for x in s:
+    if x.get("title")==name: print(x.get(field,"")); break' "$1" "$2" 2>/dev/null
+}
+
+reap_one(){
+  local n="$1" rc=0
+  echo "##### $n"
+  local id path tmuxs
+  id=$(deck_field "$n" id); path=$(deck_field "$n" path); tmuxs=$(deck_field "$n" tmux_session)
+
+  # worktree: agent-deck path, else the container's work mount
+  if [ -z "$path" ]; then
+    path=$(docker inspect "$n" --format '{{range .Mounts}}{{if eq .Destination "/home/pwuser/work"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)
+  fi
+
+  # 1) container (cc-stop = compose down + agent-deck session stop + ledger stopping)
+  if docker ps -a --format '{{.Names}}' | grep -qx "$n"; then
+    run cc-stop "$n" >/dev/null 2>&1 || run docker rm -f "$n" >/dev/null 2>&1
+    say "container removed"
+  fi
+
+  # 2) agent-deck entry
+  if [ -n "$id" ]; then run agent-deck rm "$id" >/dev/null 2>&1 && say "agent-deck entry removed ($id)"; fi
+
+  # 3) tmux (exact name from the deck, plus any legacy bare-name session)
+  for t in "$tmuxs" "$n"; do
+    [ -n "$t" ] && tmux has-session -t "=$t" 2>/dev/null && run tmux kill-session -t "=$t" && say "tmux $t killed"
+  done
+
+  # 4) worktree — never delete uncommitted work without --force
+  if [ -n "$path" ] && [ -d "$path" ]; then
+    local repo_dir="${path#$BASE/}"; repo_dir="$BASE/${repo_dir%%/*}"
+    local ga=()
+    if   [ -d "$repo_dir/.bare" ]; then ga=(--git-dir="$repo_dir/.bare")
+    elif [ -e "$repo_dir/.git" ];  then ga=(-C "$repo_dir")
+    else echo "  WARN: no repo at $repo_dir — worktree $path left in place"; return 1; fi
+    if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ] && [ "$FORCE" != 1 ]; then
+      echo "  REFUSED: $path has uncommitted changes (re-run with --force to discard):"
+      git -C "$path" status --short | head -5 | sed 's/^/    /'
+      rc=1
+    else
+      run git "${ga[@]}" worktree remove --force "$path" 2>/dev/null || run rm -rf "$path"
+      run git "${ga[@]}" worktree prune 2>/dev/null
+      say "worktree removed: $path (branch kept in $repo_dir)"
+    fi
+  elif [ -n "$path" ]; then
+    echo "  worktree already gone: $path"
+  else
+    echo "  no worktree known for $n (not on the deck, no container mount)"
+  fi
+
+  # 5) ledger
+  { run cc-ledger set-by-session "$n" done >/dev/null 2>&1 || true; } && say "ledger done"
+  return $rc
+}
+
+rc=0
+for n in "${NAMES[@]}"; do reap_one "$n" || rc=1; done
+[ "$DRY" = 1 ] && echo "DRY RUN — nothing changed."
+exit $rc

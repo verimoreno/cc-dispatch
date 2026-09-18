@@ -1,6 +1,6 @@
 ---
 name: cc-spawn-session
-description: Spawn a new cc-spawn session on cc-host over SSH and hand it a task — create the worktree+container with cc-spawn, launch Claude Code with ccd, wait for the REPL to be ready, then inject the initial prompt. Also covers spawning an OpenCode fleet session (cc-arch / cc-code) — same flow, auto-launched, see the OpenCode variant section. Use when Veri says "spawn a session", "create a session for <repo>", "dispatch this to a session", "run this task in a new session on the host", "start an agent on <branch>", or "spawn an opencode / arch / code session". Completes the lifecycle with cc-supervise (monitor) and cc-cleanup-sessions (reap).
+description: Spawn a new cc-spawn session on cc-host over SSH and hand it a task — create the worktree+container with cc-spawn, launch Claude Code with ccd, wait for the REPL to be ready, then inject the initial prompt. Also covers spawning an OpenCode fleet session (cc-arch / cc-code) — same flow, auto-launched, see the OpenCode variant section. Use when Veri says "spawn a session", "create a session for <repo>", "dispatch this to a session", "run this task in a new session on the host", "start an agent on <branch>", or "spawn an opencode / arch / code session". Completes the lifecycle with cc-supervise (monitor) and `cc-reap` on cc-host (reap).
 license: Internal — Fractional / Veri
 ---
 
@@ -18,7 +18,7 @@ gets acted on immediately, unattended — commits, pushes, PRs. Only inject
 prompts you'd be happy to see executed with no human in the loop.
 
 Host facts: SSH alias `cc-host`, host home is `/home/veri` (not `/home/veridiano`).
-Conventions shared with [[cc-supervise]] and [[cc-cleanup-sessions]]; host layout
+Conventions shared with [[cc-supervise]]; host layout
 per `cc-docker-host-setup`.
 
 ## Inputs
@@ -38,7 +38,7 @@ per `cc-docker-host-setup`.
   GITHUB_TOKEN + model keys. cc-spawn now runs admission control and may REFUSE
   a spawn (fleet full: 12 resident / 48G admitted / 2 concurrent starts, or low
   host memory/disk); the error says why — don't blind-retry, reap sessions via
-  [[cc-cleanup-sessions]] or wait for the running starts to finish.
+  `cc-reap` the finished ones or wait for the running starts to finish.
 - **plan** (optional) — a plan id under `/opt/cc-notes` (see [[cc-plan-notes]]).
   When set, prepend to the prompt:
   `You are part of plan /opt/cc-notes/<plan>/ — follow the plan-notes protocol in your CLAUDE.md before starting.`
@@ -143,8 +143,8 @@ the same shape with three differences:
    launcher into a booting TUI, and OpenCode needs only a single Enter (no paste quirk).
    Reattaching a running session never relaunches.
 
-**Teardown** uses the 3-arg cleanup: `cc-cleanup-worktree <repo> <branch> <arch|code>` (then
-`cc-stop <session-name>` first, as usual). OpenCode sessions bill the OpenCode Go subscription by
+**Teardown** is `cc-reap <session-name>` like any other session (it resolves the suffixed
+worktree from the deck). OpenCode sessions bill the OpenCode Go subscription by
 default (flat-rate); heavy parallel fan-outs can hit Go's $12/5h cap — use bare model shorthands
 (OpenRouter, pay-per-token) for those.
 
@@ -160,9 +160,10 @@ default (flat-rate); heavy parallel fan-outs can hit Go's $12/5h cap — use bar
   `send-keys -l` (literal) or a buffer, never bare into the command line.
 - **This skill never tears anything down.** If a spawn half-succeeded (container
   up, no agent-deck entry), report the state and let Veri or
-  [[cc-cleanup-sessions]] decide. When Veri *asks* for a teardown of a session
-  spawned here, the host tools are: `cc-stop <session-name>` (container),
-  `cc-cleanup-worktree <repo> <branch>` (worktree + agent-deck entry), then
+  [[cc-supervise]] decide. When Veri *asks* for a teardown of a session
+  spawned here, the host tool is `cc-reap <session-name>` — container, agent-deck
+  entry, tmux, worktree and ledger in one go (never `cc-stop` alone: that leaves
+  a dead entry on the deck). Then
   `git --git-dir=~/Fractional/<repo>/.bare branch -D <branch>` if the branch was
   never pushed. Verification spawns (like a skill test) should be torn down
   immediately after the check.

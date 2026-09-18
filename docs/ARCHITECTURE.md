@@ -75,6 +75,7 @@ stateDiagram-v2
   starting --> running : agent-deck registered
   running --> stopping : cc-stop
   stopping --> done : cc-cleanup-worktree
+  running --> done : cc-reap (container+entry+tmux+worktree)
   requested --> failed : EXIT trap (stage-tagged)
   starting --> failed : EXIT trap
   requested --> abandoned : crash + owner dead 30min (auto-expired)
@@ -146,7 +147,9 @@ session.
 | `cc-ledger list / show / set` | reservation state machine |
 | `cc-plan list / init / json <plan> [--verify] / verify / register / context / release [--apply]` | plan projection + evidence checks + roster edits; `context` = per-session context pack (verified artifacts + HANDOFF of deps), `release` = resume blocked residents whose typed WAITS are verified (dry-run unless `--apply`) |
 | `cc-reconcile [--fail-attempt --adopt]` | ledger × docker × agent-deck cross-check (read-only; repairs audited) |
-| `cc-stop` / `cc-cleanup-worktree` | reap (→ ledger stopping/done) |
+| `cc-reap <name>...` | reap a session COMPLETELY by name: container, agent-deck entry, tmux, worktree, ledger done (`--dry-run`, `--force` for dirty trees) |
+| `cc-stop` / `cc-cleanup-worktree` | the two halves of cc-reap (stop keeps entry+worktree, for restarts) |
+| `cc-teardown-idle [--execute]` | cc-reap everything not ALIVE on agent-deck (stopped/error deck entries included) |
 | `cc-github-token <owner/repo>` | mint single-repo ~1h App token |
 | `host/deploy.sh [--check --rollback --list]` | deploy the control plane from git; `--check` = drift detector |
 | `host/tests/run-tests.sh` | 33+ checks: parser fixtures, ledger integration, board smoke |
