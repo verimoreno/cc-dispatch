@@ -49,7 +49,8 @@ reap_one(){
 
   # 1) container (cc-stop = compose down + agent-deck session stop + ledger stopping)
   if docker ps -a --format '{{.Names}}' | grep -qx "$n"; then
-    run cc-stop "$n" >/dev/null 2>&1 || run docker rm -f "$n" >/dev/null 2>&1
+    run cc-stop "$n" >/dev/null 2>&1   # compose down + deck stop + ledger stopping
+    run docker rm -f "$n" >/dev/null 2>&1 || true   # cc-stop ignores an EXITED container
     say "container removed"
   fi
 

@@ -153,7 +153,9 @@ The same data is visual at `http://cc-host:7822/plans.html` (Plan Board).
   entry, tmux, worktree and ledger. `cc-stop` alone leaves a dead `stopped`/`error`
   entry on the deck, which is what "I reaped it but still see it" means. `agent-deck
   ls` rows with status `stopped`/`error` and no container are dead: list them as
-  reapable, and `cc-teardown-idle --execute` clears them all at once.
+  reapable and clear them with `cc-reap <name>...`. `cc-teardown-idle --execute` is a
+  whole-fleet flush (every non-alive container AND every orphan wt-* worktree, dirty
+  ones included) — only when Veri asks for exactly that.
 - Reuses the SSH-to-`cc-host` + `agent-deck ls --json` conventions from
   [[cc-spawn-session]]. Session→worktree→tmux mapping per `cc-docker-host-setup`.
 

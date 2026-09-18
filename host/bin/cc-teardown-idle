@@ -66,12 +66,14 @@ echo "Keepers (${#KEEPERS[@]}): ${KEEPERS[*]:-<none>}"
 echo
 
 # ---------- 0) dead agent-deck entries (no container, still on the deck) ----------
+# "dead" on the deck can be a stale read: a live container or tmux window wins.
 echo "===== dead deck entries ====="
 for t in "${DEAD[@]:-}"; do
   [ -n "$t" ] || continue
-  if is_keeper "$t"; then echo "  KEEP  $t"; continue; fi
+  if is_keeper "$t" || docker ps --format "{{.Names}}" | grep -qx "$t" \
+     || tmux ls -F "#S" 2>/dev/null | grep -q "^agentdeck_$(tr / - <<<"$t")_"; then echo "  KEEP  $t (alive)"; continue; fi
   echo "  REAP  $t"
-  [ "$EXECUTE" = 1 ] && cc-reap "$t" >/dev/null 2>&1
+  [ "$EXECUTE" = 1 ] && cc-reap --force "$t" >/dev/null 2>&1
 done
 
 # ---------- 1) containers ----------
@@ -80,7 +82,7 @@ stopped=0
 for c in $(docker ps --format '{{.Names}}'); do
   if is_keeper "$c"; then echo "  KEEP  $c"; continue; fi
   echo "  REAP  $c"; stopped=$((stopped+1))
-  [ "$EXECUTE" = 1 ] && cc-reap "$c" >/dev/null 2>&1
+  [ "$EXECUTE" = 1 ] && cc-reap --force "$c" >/dev/null 2>&1   # --force: DIRTY trees go, as the worktree pass always did
 done
 
 # ---------- 2) worktrees (by exact path) ----------
