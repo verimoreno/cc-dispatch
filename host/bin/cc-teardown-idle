@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# cc-teardown-idle — stop+remove every cc-spawn session EXCEPT the ones currently
-# active on agent-deck (plus any names passed with --keep). Frees RAM on the host.
+# cc-teardown-idle — reap every cc-spawn session EXCEPT the ones currently ALIVE
+# on agent-deck (running/idle/waiting) plus any names passed with --keep. Dead
+# deck entries (stopped/error) are reaped too — entry, tmux, worktree — via cc-reap.
 #
 # Usage:
 #   cc-teardown-idle                     # DRY RUN (default) — prints the plan, changes nothing
@@ -28,16 +29,19 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# ---------- determine keepers (agent-deck active + --keep) ----------
-KEEPERS=()
-while IFS= read -r t; do [ -n "$t" ] && KEEPERS+=("$t"); done < <(
+# ---------- determine keepers (agent-deck ALIVE + --keep) and dead deck entries ----------
+KEEPERS=(); DEAD=()
+while IFS=$'\t' read -r st t; do
+  [ -n "$t" ] || continue
+  case "$st" in stopped|error) DEAD+=("$t") ;; *) KEEPERS+=("$t") ;; esac
+done < <(
   agent-deck list -json 2>/dev/null | python3 -c '
 import json,sys
 try:
     d=json.load(sys.stdin); s=d if isinstance(d,list) else d.get("sessions",[])
     for x in s:
         t=x.get("title","")
-        if t: print(t)
+        if t: print(x.get("status",""), t, sep="\t")
 except Exception: pass
 ' 2>/dev/null
 )
@@ -61,13 +65,24 @@ echo "########## cc-teardown-idle  (EXECUTE=$EXECUTE) ##########"
 echo "Keepers (${#KEEPERS[@]}): ${KEEPERS[*]:-<none>}"
 echo
 
+# ---------- 0) dead agent-deck entries (no container, still on the deck) ----------
+# "dead" on the deck can be a stale read: a live container or tmux window wins.
+echo "===== dead deck entries ====="
+for t in "${DEAD[@]:-}"; do
+  [ -n "$t" ] || continue
+  if is_keeper "$t" || docker ps --format "{{.Names}}" | grep -qx "$t" \
+     || tmux ls -F "#S" 2>/dev/null | grep -q "^agentdeck_$(tr / - <<<"$t")_"; then echo "  KEEP  $t (alive)"; continue; fi
+  echo "  REAP  $t"
+  [ "$EXECUTE" = 1 ] && cc-reap --force "$t" >/dev/null 2>&1
+done
+
 # ---------- 1) containers ----------
 echo "===== containers ====="
 stopped=0
 for c in $(docker ps --format '{{.Names}}'); do
   if is_keeper "$c"; then echo "  KEEP  $c"; continue; fi
-  echo "  STOP  $c"; stopped=$((stopped+1))
-  [ "$EXECUTE" = 1 ] && { cc-stop "$c" >/dev/null 2>&1 || docker rm -f "$c" >/dev/null 2>&1 || true; }
+  echo "  REAP  $c"; stopped=$((stopped+1))
+  [ "$EXECUTE" = 1 ] && cc-reap --force "$c" >/dev/null 2>&1   # --force: DIRTY trees go, as the worktree pass always did
 done
 
 # ---------- 2) worktrees (by exact path) ----------
@@ -94,9 +109,9 @@ done
 echo
 echo "===== summary ====="
 if [ "$EXECUTE" = 1 ]; then
-  echo "EXECUTED: stopped $stopped containers, removed $removed worktrees, kept $kept keeper worktrees."
+  echo "EXECUTED: reaped ${#DEAD[@]} dead deck entries, $stopped containers, removed $removed worktrees, kept $kept keeper worktrees."
   echo "--- memory now ---"; free -h | grep -E 'Mem|Swap'
 else
-  echo "DRY RUN: would stop $stopped containers, remove $removed worktrees, keep $kept keeper worktrees."
+  echo "DRY RUN: would reap ${#DEAD[@]} dead deck entries, $stopped containers, remove $removed worktrees, keep $kept keeper worktrees."
   echo "Re-run with --execute to apply. Branches are never deleted (they stay in the bare repos)."
 fi

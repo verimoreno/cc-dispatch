@@ -188,9 +188,9 @@ non-obvious steps are the ones that cost time.
    redirects to `/login?next=%2Fapp`. Both halves matter — the control proves the
    session is doing the work.
 
-Then tear the session down (`cc-stop`, `cc-cleanup-worktree`, `cc-ledger
-set-by-session <name> done`). `cc-cleanup-worktree` refuses while Next's generated
-`next-env.d.ts`/`.gitignore` edits are uncommitted; discard them first.
+Then tear the session down with `cc-reap <name>` (container, agent-deck entry, tmux,
+worktree, ledger — all of it). It refuses while Next's generated
+`next-env.d.ts`/`.gitignore` edits are uncommitted; discard them or pass `--force`.
 
 **`DATABASE_URL_SESSION` is empty on purpose.** The password plane (`postgres`
 superuser) was rejected with `password authentication failed` on 2026-09-02, tested

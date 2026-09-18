@@ -42,4 +42,4 @@ tmux kill-session -t "=$SESSION" 2>/dev/null || true
 cc-ledger set-by-session "$SESSION" stopping >/dev/null 2>&1 || true
 
 echo "Stopped session '$SESSION'. Worktree and auth volume preserved."
-echo "agent-deck entry kept (use cc-cleanup-worktree to remove it)."
+echo "agent-deck entry kept — to reap EVERYTHING (entry, tmux, worktree, ledger) use: cc-reap $SESSION"

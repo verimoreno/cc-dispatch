@@ -449,7 +449,7 @@ def project(plan_id, verify=False):
         if st == "done" and running:
             contradictions.append({"session": name, "kind": "done-but-resident",
                                    "detail": f"finished but container still resident (a counted "
-                                             f"admission slot) — reap: cc-stop {name}"})
+                                             f"admission slot) — reap: cc-reap {name}"})
         if st == "done" and not s["unblocks"]:
             contradictions.append({"session": name, "kind": "done-unverified",
                                    "detail": "STATUS done with no typed UNBLOCKS evidence"
