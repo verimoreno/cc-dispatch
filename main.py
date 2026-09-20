@@ -484,6 +484,30 @@ async def send_prompt(session_id: str, body: dict):
     return {"ok": True, "agent": kind}
 
 
+@app.delete("/api/sessions/{session_id}")
+def reap_session(session_id: str, force: bool = False):
+    """Reap a session completely (container, deck entry, tmux, worktree, ledger).
+    Refuses a dirty worktree unless force=true — cc-reap's own guard."""
+    session = find_session(session_id)
+    # Check the worktree BEFORE calling cc-reap. cc-reap removes the container and
+    # the agent-deck entry first and only then refuses on uncommitted changes, so
+    # its own guard fires when the session has already stopped existing — the
+    # force retry would 404 on find_session and leave the worktree stranded.
+    if not force:
+        dirty = _run(["git", "-C", session["path"], "status", "--porcelain"], timeout=20)
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            raise HTTPException(409, (
+                f"{session['path']} has uncommitted changes — reap with force to discard:\n"
+                + "\n".join(dirty.stdout.strip().splitlines()[:5])
+            ))
+    cmd = ["cc-reap"] + (["--force"] if force else []) + [session["title"]]
+    result = _run(cmd, timeout=120)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        raise HTTPException(409, output.strip()[-800:] or "cc-reap failed")
+    return {"ok": True, "output": output.strip()[-800:]}
+
+
 @app.get("/api/sessions/{session_id}/agent")
 def session_agent(session_id: str):
     """Which CLI is live in this session — pane-probed, so it survives a session

@@ -106,7 +106,18 @@
 
   /* ── compose panel ── */
   .compose { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
-  .compose-header { padding: 16px 24px 14px; border-bottom: 1px solid var(--line); }
+  .compose-header {
+    padding: 16px 24px 14px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .reap-btn {
+    margin-left: auto; flex-shrink: 0; cursor: pointer;
+    background: transparent; border: 1px solid var(--line-strong); border-radius: 7px;
+    color: var(--ink-soft); font-family: var(--mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em; padding: 7px 12px;
+  }
+  .reap-btn:hover { color: #e26d5c; border-color: #e26d5c; }
+  .reap-btn:disabled { opacity: 0.5; cursor: default; }
   .compose-title {
     font-family: var(--mono); font-weight: 600; font-size: 14px;
     display: flex; align-items: center; gap: 10px;
@@ -380,6 +391,34 @@ function renderSidebar() {
   `).join('');
 }
 
+// ── Reap session ────────────────────────────────────────────────────────────
+
+async function reapSession(force = false) {
+  const session = sessions.find(s => s.id === activeId);
+  if (!session) return;
+  if (!force && !confirm(`Reap "${session.title}"?\n\nRemoves the container, agent-deck entry, tmux session and worktree. The branch is kept.`)) return;
+  const btn = document.getElementById('reap-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Reaping…'; }
+  try {
+    const res = await fetch(`/api/sessions/${session.id}?force=${force}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.detail || 'reap failed';
+      // cc-reap refuses a dirty worktree; offer the --force retry it names.
+      if (!force && /uncommitted/i.test(detail) && confirm(`${detail}\n\nDiscard those changes and reap anyway?`)) return reapSession(true);
+      alert(detail);
+      return;
+    }
+    activeId = null;
+    await fetchSessions();
+    renderCompose();
+  } catch (e) {
+    alert('reap failed: ' + e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Reap'; }
+  }
+}
+
 // ── Select session ──────────────────────────────────────────────────────────
 
 function selectSession(id) {
@@ -404,6 +443,7 @@ function renderCompose() {
         <div class="compose-title">${session.title} <span class="agent-badge ${agentKind(session)}" id="agent-badge">${agentKind(session) || '…'}</span></div>
         <div class="compose-path">${session.path}</div>
       </div>
+      <button class="reap-btn" id="reap-btn" onclick="reapSession()" title="Reap: container, deck entry, tmux, worktree">Reap</button>
     </div>
     <div class="compose-body">
 
