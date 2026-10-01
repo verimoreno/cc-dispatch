@@ -12,6 +12,13 @@ if [ -f "$DIR/.env" ]; then
   . "$DIR/.env"
   set +a
 fi
+# The repo/branch pickers shell out to `gh`. On cc-host nobody ran `gh auth
+# login`, so borrow the fleet's GitHub token — read at each start, so rotating it
+# in the fleet .env can't leave a stale copy here. Absent on a laptop: no-op.
+FLEET_ENV=/opt/cc-sessions/.env
+if [ -z "${GH_TOKEN:-}" ] && [ -r "$FLEET_ENV" ]; then
+  export GH_TOKEN="$(grep -m1 '^GITHUB_TOKEN=' "$FLEET_ENV" | cut -d= -f2-)"
+fi
 # Single-dash default: fill in only when UNSET, so an explicit empty value in
 # .env (CC_DISPATCH_HOST=) is respected and selects LOCAL mode. `:-` would
 # clobber that empty value and force remote/SSH mode on the host itself.
