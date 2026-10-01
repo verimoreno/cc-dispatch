@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0e1116">
 <title>Plan Board</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,7 +28,7 @@
   body {
     margin: 0; background: var(--ground); color: var(--ink);
     font-family: var(--sans); font-size: 14.5px; line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
+    -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%;
   }
   h1, h2 { font-family: var(--serif); font-weight: 400; letter-spacing: -0.01em; text-wrap: balance; }
   a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
@@ -183,7 +184,7 @@
     margin-top: 14px; background: var(--surface-2); border: 1px solid var(--line);
     border-radius: 8px; padding: 12px 16px;
   }
-  .contras .kicker {
+  .contras .kicker, .contras summary {
     font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
     text-transform: uppercase; color: var(--danger); margin-bottom: 8px; font-weight: 600;
   }
@@ -242,7 +243,42 @@
   footer { padding: 34px 0 60px; color: var(--ink-faint); font-size: 13px; }
   footer code { font-family: var(--mono); font-size: 12px; }
 
-  @media (max-width: 640px) { .wrap { padding: 0 18px; } .board { gap: 40px; } }
+  /* folds — native <details>; fold() keeps them open across the 30s re-render */
+  details summary { cursor: pointer; }
+  details.fold summary {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  details.fold .sess { margin-top: 10px; }
+  .meta span.dep { display: none; }
+
+  /* ── phone ── */
+  @media (max-width: 700px) {
+    .wrap { padding: 0 14px; }
+    .bar-in { gap: 10px; }
+    .bar-mark .wide { display: none; }
+    .bar-nav a { padding: 10px 8px; }
+    #refresh-chip { padding: 9px 13px; }
+    .mast { padding: 18px 0 12px; }
+    .kpis { grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0 4px; }
+    .kpi { padding: 9px 8px 8px; }
+    .kpi .n { font-size: 19px; }
+    .kpi .k { font-size: 9px; letter-spacing: 0.04em; line-height: 1.25; }
+    .plan { padding: 14px 14px 12px; margin: 12px 0; }
+    .badge { border-radius: 12px; }
+    .vtoggle button { padding: 9px 14px; }
+    /* One column: waves stack top to bottom, so the arrows between columns go
+       and each card names what it waits for instead (.dep). */
+    .board { flex-direction: column; align-items: stretch; gap: 18px; overflow-x: visible; padding: 12px 0 4px; }
+    .col { min-width: 0; gap: 10px; }
+    svg.edges { display: none; }
+    .meta span.dep { display: inline; }
+    details summary { padding: 8px 0; }
+    .contras summary { margin-bottom: 0; }
+    .contras div.row { flex-wrap: wrap; gap: 2px 9px; }
+    code.answer { white-space: normal; overflow-wrap: anywhere; padding: 8px 10px; }
+    th, td { padding: 9px 10px; }
+  }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -250,7 +286,7 @@
 
 <div class="bar">
   <div class="wrap bar-in">
-    <span class="bar-mark">cc-dispatch · Plan Board</span>
+    <span class="bar-mark"><span class="wide">cc-dispatch · </span>Plan Board</span>
     <nav class="bar-nav">
       <a href="/">Dashboard</a>
       <button id="refresh-chip" title="Refresh now">loading…</button>
@@ -284,6 +320,19 @@ const el = (tag, cls, text) => {
   if (text !== undefined) e.textContent = text;
   return e;
 };
+const phone = () => matchMedia("(max-width: 700px)").matches;
+
+// A <details> whose open state survives the 30s re-render (which rebuilds the
+// whole page and would otherwise snap every fold shut under the reader).
+const folds = new Map();
+function fold(key, cls, label, open = false) {
+  const det = el("details", cls);
+  det.open = folds.get(key) ?? open;
+  det.append(el("summary", null, label));
+  det.addEventListener("toggle", () => folds.set(key, det.open));
+  return det;
+}
+
 const rel = (min) => min == null ? null
   : min < 1 ? "just now" : min < 60 ? `${min}m ago`
   : min < 1440 ? `${Math.round(min / 60)}h ago` : `${Math.round(min / 1440)}d ago`;
@@ -317,6 +366,7 @@ function sessionCard(s) {
   if (s.task) box.append(el("div", "tk", s.task));
   const meta = el("div", "meta");
   if (s.repo_branch) meta.append(el("span", null, s.repo_branch));
+  if (depTokens(s).length) meta.append(el("span", "dep", "after " + s.depends_on));
   if (s.ledger_state) meta.append(el("span", null, "ledger " + s.ledger_state));
   // live signal: the hook pulse / pane output, not the agent's prose. Notes come
   // every ~30min at best, so this is the only thing that answers "right now".
@@ -501,6 +551,15 @@ function renderPlan(p) {
     boxes.set(s.name, { box, sess: s });
   }
   for (const d of [...cols.keys()].sort((a, b) => a - b)) board.append(cols.get(d));
+  // Phone: fold finished lanes away — one plan can carry 60 of them, and the
+  // edges that need every card laid out are hidden there anyway.
+  if (phone()) for (const [d, c] of cols) {
+    const done = c.querySelectorAll(".sess.done");
+    if (!done.length) continue;
+    const det = fold(`${p.plan}/done/${d}`, "fold", `${done.length} done`);
+    det.append(...done);
+    c.append(det);
+  }
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "edges");
   board.append(svg);
@@ -548,8 +607,7 @@ function renderPlan(p) {
 
   const contras = (p.contradictions || []), perrs = (p.parser_errors || []);
   if (contras.length || perrs.length) {
-    const c = el("div", "contras");
-    c.append(el("div", "kicker", "Needs attention"));
+    const c = fold(p.plan + "/attention", "contras", `Needs attention · ${contras.length + perrs.length}`, !phone());
     for (const x of contras) {
       const row = el("div", "row");
       row.append(el("b", null, x.kind), el("span", null, `${x.session} — ${x.detail}`));
@@ -564,8 +622,7 @@ function renderPlan(p) {
   }
 
   if ((p.assignments || []).length) {
-    const det = el("details", "assign");
-    det.append(el("summary", null, `Assignments · ${p.assignments.length}`));
+    const det = fold(p.plan + "/assign", "assign", `Assignments · ${p.assignments.length}`);
     const wrapT = el("div", "tablewrap"), tbl = el("table");
     const thead = el("thead"), hr = el("tr");
     hr.append(el("th", null, "Area / surface"), el("th", null, "Owner"));
@@ -687,7 +744,7 @@ function tick() {
   const chip = document.getElementById("refresh-chip");
   timer -= 1;
   if (chip.dataset.err !== "1")
-    chip.textContent = `updated ${new Date().toLocaleTimeString()} · ${timer}s`;
+    chip.textContent = phone() ? `↻ ${timer}s` : `updated ${new Date().toLocaleTimeString()} · ${timer}s`;
   if (timer <= 0) { refresh(); }
 }
 document.getElementById("refresh-chip").addEventListener("click", refresh);
