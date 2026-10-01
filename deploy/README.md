@@ -10,12 +10,12 @@ and it comes back on its own after a reboot.
 - **Runs on the host, in LOCAL mode** (`CC_DISPATCH_HOST=` empty in `.env`), so it
   drives the host's own `tmux` / `agent-deck` directly — no SSH loopback.
 - **Bound to the host's Tailscale IP** (`CC_DISPATCH_BIND=auto`, resolved fresh at
-  each start), so the dashboard is reachable only over the private tailnet, never
-  the public internet. That tailnet boundary **is** the security model: **all** UI
+  each start), so the app itself listens only on the private tailnet. **All** UI
   endpoints — including session **spawn** (`POST /api/sessions`) and prompt
   **injection** (`POST /api/sessions/{id}/prompt`), not just read-only browsing —
-  are unauthenticated; only the Supabase `from-task` webhook is token-gated. So
-  never bind this to `0.0.0.0` or a public interface.
+  are unauthenticated in the app; only the Supabase `from-task` webhook is
+  token-gated. The public route below adds a login in nginx, in front of the app.
+  So never bind this to `0.0.0.0` or a public interface.
 - **systemd `Restart=always`, `StartLimitIntervalSec=0`, enabled at boot, with an
   `ExecStartPre` that waits for the Tailscale IP** — so a crash or reboot doesn't
   silently take dispatch offline, and it recovers on its own even through the
@@ -46,12 +46,24 @@ on the tailnet, so it can only reach the bridge through nginx on this host's
 **public** IP. That vhost lives at `deploy/nginx/cc-dispatch.conf` — copy it to
 `/etc/nginx/sites-available/cc-dispatch` and reload.
 
-**It proxies exactly one route**, `POST /api/sessions/from-task`, which is the
-only route in `main.py` behind `secure_router` (the bearer check). Everything
-else returns 404 publicly. That is deliberate: `POST /api/sessions` (spawn) and
-`POST /api/sessions/{id}/prompt` (inject a prompt into a live agent session) are
-on bare `@app` with **no** authentication, so publishing them with a blanket
-`location /` would put unauthenticated remote code execution on the internet.
+**One route is published without a login**, `POST /api/sessions/from-task`,
+which is the only route in `main.py` behind `secure_router` (the bearer check).
+
+**Everything else — the dashboard — sits behind nginx `auth_basic`** (since
+2026-10-01, so it works from a phone without Tailscale). `POST /api/sessions`
+(spawn) and `POST /api/sessions/{id}/prompt` (inject a prompt into a live agent
+session) are on bare `@app` with **no** authentication of their own, so that
+`auth_basic` is the only thing between the internet and remote code execution.
+nginx has no lockout: keep the password long and machine-generated.
+
+The user is `veri`; the password hash lives in `/etc/nginx/cc-dispatch.htpasswd`
+(root:www-data, 640). Set or rotate it from the laptop — takes effect
+immediately, no reload:
+
+```bash
+printf 'veri:%s\n' "$(openssl passwd -6)" | \
+  ssh cc-host 'sudo install -m 640 -o root -g www-data /dev/stdin /etc/nginx/cc-dispatch.htpasswd'
+```
 
 **The upstream is coupled to `CC_DISPATCH_BIND`.** `install-on-host.sh` sets
 `auto`, which `run.sh` resolves to this host's Tailscale IP on port 7822 — *not*
@@ -76,7 +88,8 @@ supabase secrets set CC_DISPATCH_SECRET="$(grep -m1 '^CC_DISPATCH_SECRET=' ~/cc-
 Open in the browser and bookmark:
 
 ```
-http://cc-host-hel:7822/          # MagicDNS name (if enabled)
+https://dispatch.wearefractional.ai/   # anywhere, behind the login
+http://cc-host-hel:7822/          # tailnet only; type http:// — it has no TLS
 http://<tailscale-ip>:7822/       # e.g. http://100.100.213.79:7822/
 ```
 
