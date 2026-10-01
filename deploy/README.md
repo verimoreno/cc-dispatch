@@ -39,6 +39,11 @@ The script sets up the venv, writes a locked-down `.env` (generating the secret
 and auto-detecting the Tailscale IP via `tailscale ip -4`), installs the systemd
 unit, and starts the service. It's idempotent — re-run it after any `git pull`.
 
+The repo and branch pickers in **+ New session** need the GitHub CLI on the host:
+`sudo apt install gh`. `run.sh` hands it `GITHUB_TOKEN` from `/opt/cc-sessions/.env`,
+so no `gh auth login` is needed. Without `gh` the pickers stay empty (the
+endpoint 500s) and you have to type `owner/repo` by hand.
+
 ## The public route (`dispatch.wearefractional.ai`)
 
 The Supabase edge function `assign-to-veris-agent` runs in Supabase's cloud, not
