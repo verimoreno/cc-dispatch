@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0e1116">
 <title>cc-dispatch</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -26,8 +27,8 @@
   body {
     background: var(--ground); color: var(--ink);
     font-family: var(--sans); font-size: 14.5px; line-height: 1.5;
-    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
-    -webkit-font-smoothing: antialiased;
+    height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+    -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%;
   }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 
@@ -263,6 +264,47 @@
   }
   .cancel-btn:hover { border-color: var(--ink); color: var(--ink); }
 
+  /* ── phone: one pane at a time — the session list, or the selected session ── */
+  .compose-header > div { min-width: 0; }
+  .back-btn { display: none; }
+  @media (max-width: 700px) {
+    header { padding: 0 14px; gap: 10px; }
+    .host-badge, .fab-hint { display: none; }
+    .bar-link { padding: 10px 8px; }
+
+    .sidebar { width: 100%; border-right: none; padding: 12px 12px 96px; gap: 8px; }
+    .compose { display: none; }
+    body.detail .sidebar, body.detail .fab { display: none; }
+    body.detail .compose { display: flex; }
+    .session-card { padding: 13px 14px; }
+    .session-title { font-size: 14px; white-space: normal; overflow-wrap: anywhere; }
+
+    .compose-header { padding: 8px 12px 8px 4px; gap: 4px; }
+    .compose-title { font-size: 13.5px; flex-wrap: wrap; gap: 4px 10px; overflow-wrap: anywhere; }
+    .back-btn {
+      display: block; flex-shrink: 0; width: 44px; height: 44px; cursor: pointer;
+      background: none; border: none; color: var(--ink-soft); font-size: 30px; line-height: 1;
+    }
+    .reap-btn { padding: 12px 14px; }
+    .compose-body { padding: 16px 14px; }
+    /* iOS zooms the whole page when a focused field is under 16px */
+    textarea, .field input, .field select { font-size: 16px; }
+    textarea { min-height: 110px; }
+    .dropzone { padding: 14px; }
+    .hint:empty { display: none; }
+    .send-row .send-btn { flex: 1; padding: 14px; font-size: 15px; }
+
+    .fab { width: 58px; height: 58px; }
+    /* top, not bottom: the keyboard covers the bottom of the screen after a send */
+    #toast { top: 64px; bottom: auto; left: 14px; right: 14px; z-index: 300; text-align: center; border-radius: 12px; }
+    #toast.warn { max-width: none; }
+    /* top-aligned so the fields stay above the keyboard */
+    .modal-backdrop { align-items: flex-start; padding: 16px 12px; }
+    .modal { width: 100%; }
+    .modal-actions button { flex: 1; padding: 13px; }
+    .repo-list-item { padding: 12px 13px; }
+  }
+
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -327,6 +369,17 @@
 let sessions = [];
 let activeId = null;
 let pendingImage = null;
+// Touch devices have no Ctrl+Enter / Ctrl+V — don't advertise them there.
+const TOUCH = matchMedia('(pointer: coarse)').matches;
+const SEND_HINT = TOUCH ? '' : 'Ctrl+Enter';
+const dropzoneHTML = () => `
+  <div class="dropzone" id="dropzone"
+       ondragover="onDragOver(event)"
+       ondragleave="onDragLeave(event)"
+       ondrop="onDrop(event)">
+    <input type="file" accept="image/*" onchange="onFileSelect(event)">
+    <div>${TOUCH ? 'Tap to attach an image' : 'Drop / paste (Ctrl+V) an image'} — optional</div>
+  </div>`;
 
 // ── Fetch sessions ──────────────────────────────────────────────────────────
 
@@ -431,6 +484,7 @@ function selectSession(id) {
 function renderCompose() {
   const session = sessions.find(s => s.id === activeId);
   const compose = document.getElementById('compose');
+  document.body.classList.toggle('detail', !!session);
 
   if (!session) {
     compose.innerHTML = '<div class="no-session"><div class="card"><p class="v">No session selected.</p><p class="a">Pick one on the left →</p></div></div>';
@@ -439,6 +493,7 @@ function renderCompose() {
 
   compose.innerHTML = `
     <div class="compose-header">
+      <button class="back-btn" onclick="selectSession(null)" aria-label="Back to sessions">‹</button>
       <div>
         <div class="compose-title">${session.title} <span class="agent-badge ${agentKind(session)}" id="agent-badge">${agentKind(session) || '…'}</span></div>
         <div class="compose-path">${session.path}</div>
@@ -449,18 +504,10 @@ function renderCompose() {
 
       <div class="prompt-wrap">
         <label>Prompt</label>
-        <textarea id="prompt-input" placeholder="Type a prompt… (Ctrl+Enter to send)" rows="5"></textarea>
-        <div id="image-area">
-          <div class="dropzone" id="dropzone"
-               ondragover="onDragOver(event)"
-               ondragleave="onDragLeave(event)"
-               ondrop="onDrop(event)">
-            <input type="file" accept="image/*" onchange="onFileSelect(event)">
-            <div>Drop / paste (Ctrl+V) an image — optional</div>
-          </div>
-        </div>
+        <textarea id="prompt-input" placeholder="Type a prompt…${TOUCH ? '' : ' (Ctrl+Enter to send)'}" rows="5"></textarea>
+        <div id="image-area">${dropzoneHTML()}</div>
         <div class="send-row">
-          <span class="hint" id="send-hint">Ctrl+Enter</span>
+          <span class="hint" id="send-hint">${SEND_HINT}</span>
           <button class="send-btn" id="send-btn" onclick="sendAll()">Send</button>
         </div>
       </div>
@@ -593,17 +640,9 @@ document.addEventListener('paste', e => {
 
 function clearImage() {
   pendingImage = null;
-  document.getElementById('image-area').innerHTML = `
-    <div class="dropzone" id="dropzone"
-         ondragover="onDragOver(event)"
-         ondragleave="onDragLeave(event)"
-         ondrop="onDrop(event)">
-      <input type="file" accept="image/*" onchange="onFileSelect(event)">
-      <div>Drop / paste (Ctrl+V) an image — optional</div>
-    </div>
-  `;
+  document.getElementById('image-area').innerHTML = dropzoneHTML();
   document.getElementById('send-btn').textContent = 'Send';
-  document.getElementById('send-hint').textContent = 'Ctrl+Enter';
+  document.getElementById('send-hint').textContent = SEND_HINT;
 }
 
 
