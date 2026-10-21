@@ -446,29 +446,44 @@ function renderSidebar() {
 
 // ── Reap session ────────────────────────────────────────────────────────────
 
-async function reapSession(force = false) {
+// No confirm()/alert(): Chrome silently returns false from confirm() once the
+// user ticks "don't let this page create more dialogs", and the button then
+// does nothing with no request ever sent. Two clicks on the button instead.
+let reapArmed = null;   // {force} while the button waits for its second click
+async function reapSession() {
   const session = sessions.find(s => s.id === activeId);
-  if (!session) return;
-  if (!force && !confirm(`Reap "${session.title}"?\n\nRemoves the container, agent-deck entry, tmux session and worktree. The branch is kept.`)) return;
   const btn = document.getElementById('reap-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Reaping…'; }
+  if (!session || !btn) return;
+  if (!reapArmed) {
+    reapArmed = { force: false };
+    btn.textContent = 'Reap? (click again)';
+    btn.title = 'Removes the container, agent-deck entry, tmux session and worktree. The branch is kept.';
+    setTimeout(() => { if (reapArmed && !reapArmed.busy) { reapArmed = null; btn.textContent = 'Reap'; } }, 6000);
+    return;
+  }
+  if (reapArmed.busy) return;
+  reapArmed.busy = true;
+  btn.disabled = true; btn.textContent = 'Reaping…';
   try {
-    const res = await fetch(`/api/sessions/${session.id}?force=${force}`, { method: 'DELETE' });
+    const res = await fetch(`/api/sessions/${session.id}?force=${reapArmed.force}`, { method: 'DELETE' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const detail = data.detail || 'reap failed';
-      // cc-reap refuses a dirty worktree; offer the --force retry it names.
-      if (!force && /uncommitted/i.test(detail) && confirm(`${detail}\n\nDiscard those changes and reap anyway?`)) return reapSession(true);
-      alert(detail);
+      const detail = data.detail || `reap failed (${res.status})`;
+      // cc-reap refuses a dirty worktree; arm the --force retry it names.
+      reapArmed = /uncommitted/i.test(detail) ? { force: true } : null;
+      btn.textContent = reapArmed ? 'Dirty — discard & reap?' : 'Reap failed';
+      btn.title = detail;
       return;
     }
+    reapArmed = null;
     activeId = null;
     await fetchSessions();
     renderCompose();
   } catch (e) {
-    alert('reap failed: ' + e);
+    reapArmed = null;
+    btn.textContent = 'Reap failed'; btn.title = String(e);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Reap'; }
+    btn.disabled = false;
   }
 }
 
