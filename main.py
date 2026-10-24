@@ -17,9 +17,35 @@ from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, HT
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-# Set CC_DISPATCH_HOST to an SSH alias to manage a remote cc-host.
-# Leave unset (or empty) for local mode.
-REMOTE_HOST = os.environ.get("CC_DISPATCH_HOST", "cc-host").strip()
+# Host registry: CC_DISPATCH_HOSTS="hel=local,home=lm-server" — name=ssh alias,
+# alias "local" (or empty) = run on this box. The first entry is the default
+# for every route called without ?host=. CC_DISPATCH_HOST (one alias, empty =
+# local) still works as a one-host fallback so an existing .env keeps booting.
+_HOST_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+
+def _parse_hosts(registry: str, legacy: str) -> dict[str, str]:
+    """name -> ssh alias ('' = local). Empty registry -> {"hel": legacy}."""
+    hosts: dict[str, str] = {}
+    for item in filter(None, (x.strip() for x in registry.split(","))):
+        name, _, alias = item.partition("=")
+        if not _HOST_NAME_RE.fullmatch(name) or alias.startswith("-"):
+            print(f"FATAL: bad CC_DISPATCH_HOSTS entry {item!r}", file=sys.stderr)
+            sys.exit(1)
+        hosts[name] = "" if alias in ("", "local") else alias
+    return hosts or {"hel": legacy.strip()}
+
+
+HOSTS = _parse_hosts(os.environ.get("CC_DISPATCH_HOSTS", ""), os.environ.get("CC_DISPATCH_HOST", "cc-host"))
+DEFAULT_HOST = next(iter(HOSTS))
+
+
+def _host(host: str = "") -> str:
+    """Route dependency: `?host=<name>` -> registry name; default = first entry."""
+    host = host or DEFAULT_HOST
+    if host not in HOSTS:
+        raise HTTPException(404, f"unknown host {host!r}; known: {', '.join(HOSTS)}")
+    return host
 
 _CC_DISPATCH_SECRET = os.environ.get("CC_DISPATCH_SECRET", "").strip()
 if len(_CC_DISPATCH_SECRET) < 32:
@@ -96,23 +122,27 @@ _REPO_BARE_RE = re.compile(r'^[a-zA-Z0-9._-]{1,100}$')
 _BRANCH_RE = re.compile(r'^[a-zA-Z0-9._][a-zA-Z0-9._/-]{0,199}$')
 
 
-def _run(cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedProcess:
-    if REMOTE_HOST:
-        # SSH joins all trailing args into one shell string — quote each token.
-        remote_cmd = " ".join(shlex.quote(a) for a in cmd)
-        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", REMOTE_HOST, remote_cmd]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
+def _ssh_wrap(host: str, cmd: list[str], connect_timeout: int = 5) -> list[str]:
+    """The one place a host name becomes a command line: `cmd` as-is for a local
+    host, `ssh <alias> <cmd>` otherwise. Every shell-out routes through here.
+    SSH joins all trailing args into one shell string — quote each token."""
+    alias = HOSTS[host]
+    if not alias:
+        return cmd
+    return ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}", alias,
+            " ".join(shlex.quote(a) for a in cmd)]
 
 
-def _run_tmux(tmux_session: str, args: list[str], stdin_text: Optional[str] = None):
+def _run(host: str, cmd: list[str], timeout: int = 15, **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(_ssh_wrap(host, cmd), capture_output=True, text=True, timeout=timeout, **kwargs)
+
+
+def _run_tmux(host: str, args: list[str], stdin_text: Optional[str] = None):
     # Bounded like _run/_capture_pane: a hung ssh send-keys must not block the
     # caller forever. In _spawn_and_inject a hang here would skip the finally and
     # leak the semaphore slot + branch reservation; raising instead lets both go.
-    cmd = ["tmux"] + args
-    if REMOTE_HOST:
-        remote_cmd = " ".join(shlex.quote(a) for a in cmd)
-        cmd = ["ssh", "-o", "BatchMode=yes", REMOTE_HOST, remote_cmd]
-    subprocess.run(cmd, check=True, timeout=15, input=stdin_text, text=stdin_text is not None)
+    subprocess.run(_ssh_wrap(host, ["tmux"] + args), check=True, timeout=15,
+                   input=stdin_text, text=stdin_text is not None)
 
 
 # ── Spawn scratch windows ────────────────────────────────────────────────────
@@ -129,7 +159,7 @@ def _run_tmux(tmux_session: str, args: list[str], stdin_text: Optional[str] = No
 SPAWN_SESSION = "cc-dispatch-spawns"
 
 
-def _spawn_window(spawn_cmd: str, window_name: str) -> Optional[str]:
+def _spawn_window(host: str, spawn_cmd: str, window_name: str) -> Optional[str]:
     """Run `spawn_cmd` in a window of our own holding session.
 
     Returns the tmux window id ("@42") for later reaping, or None if the create
@@ -143,8 +173,8 @@ def _spawn_window(spawn_cmd: str, window_name: str) -> Optional[str]:
     """
     name = re.sub(r"[^A-Za-z0-9_-]+", "-", window_name)[:40] or "spawn"
     try:
-        _run(["tmux", "new-session", "-d", "-s", SPAWN_SESSION])
-        result = _run([
+        _run(host, ["tmux", "new-session", "-d", "-s", SPAWN_SESSION])
+        result = _run(host, [
             "tmux", "new-window", "-d", "-P", "-F", "#{window_id}",
             "-t", f"{SPAWN_SESSION}:", "-n", name, spawn_cmd,
         ])
@@ -158,19 +188,19 @@ def _spawn_window(spawn_cmd: str, window_name: str) -> Optional[str]:
     return window_id if window_id.startswith("@") else None
 
 
-def _reap_spawn_window(window_id: Optional[str]):
+def _reap_spawn_window(host: str, window_id: Optional[str]):
     """Close a finished scratch window (it's parked on `agent-deck session
     attach`, which never exits on its own). Killing it only detaches that client
     — the host runs destroy-unattached off, so the real session lives on."""
     if not window_id:
         return
     try:
-        _run(["tmux", "kill-window", "-t", window_id])
+        _run(host, ["tmux", "kill-window", "-t", window_id])
     except (subprocess.SubprocessError, OSError) as exc:
         print(f"WARN: cc-dispatch could not reap spawn window {window_id}: {exc}", flush=True)
 
 
-def _capture_pane(tmux_session: str) -> Optional[str]:
+def _capture_pane(host: str, tmux_session: str) -> Optional[str]:
     """Capture a tmux pane's text, SSH-wrapped in remote mode (via _run).
 
     Returns the pane contents, or None if the capture command failed (e.g. the
@@ -179,7 +209,7 @@ def _capture_pane(tmux_session: str) -> Optional[str]:
     and make the readiness gate a no-op in remote mode.
     """
     try:
-        result = _run(["tmux", "capture-pane", "-p", "-t", tmux_session], timeout=10)
+        result = _run(host, ["tmux", "capture-pane", "-p", "-t", tmux_session], timeout=10)
     except (subprocess.SubprocessError, OSError):
         # TimeoutExpired, or ssh/tmux missing etc. Treat as "not ready yet"
         # rather than letting it kill the background task before injection.
@@ -239,7 +269,7 @@ def agent_kind(session: dict) -> str:
     return "claude"
 
 
-def detect_agent_kind(session: dict) -> tuple[str, str]:
+def detect_agent_kind(host: str, session: dict) -> tuple[str, str]:
     """Read the session's pane to see which CLI is actually running.
 
     Returns (kind, source) where source is "pane" (read off the live TUI) or
@@ -247,7 +277,7 @@ def detect_agent_kind(session: dict) -> tuple[str, str]:
     mid-boot / scrolled past its chrome). One SSH round-trip, so this is for
     per-send calls, not the 5 s session-list poll.
     """
-    return _kind_from_pane(_capture_pane(session.get("tmux_session", "")), session)
+    return _kind_from_pane(_capture_pane(host, session.get("tmux_session", "")), session)
 
 
 def _kind_from_pane(pane: Optional[str], session: dict) -> tuple[str, str]:
@@ -309,9 +339,9 @@ def _repl_ready(pane: Optional[str], kind: str = "claude") -> bool:
     return bool(pane) and any(m in pane for m in markers)
 
 
-def get_sessions() -> list[dict]:
+def get_sessions(host: str) -> list[dict]:
     try:
-        result = _run(["agent-deck", "ls", "--json"])
+        result = _run(host, ["agent-deck", "ls", "--json"])
     except subprocess.TimeoutExpired:
         return []
     if result.returncode != 0 or not result.stdout.strip():
@@ -322,8 +352,8 @@ def get_sessions() -> list[dict]:
         return []
 
 
-def find_session(session_id: str) -> dict:
-    session = next((s for s in get_sessions() if s["id"] == session_id), None)
+def find_session(host: str, session_id: str) -> dict:
+    session = next((s for s in get_sessions(host) if s["id"] == session_id), None)
     if not session:
         raise HTTPException(404, "Session not found")
     return session
@@ -347,16 +377,17 @@ _INJECT_LOCKS_GUARD = threading.Lock()
 _INJECT_LOCKS: dict[str, threading.RLock] = {}
 
 
-def _inject_lock(tmux_session: str) -> threading.RLock:
+def _inject_lock(host: str, tmux_session: str) -> threading.RLock:
+    key = f"{host}/{tmux_session}"  # tmux names are only unique per host
     with _INJECT_LOCKS_GUARD:
-        lock = _INJECT_LOCKS.get(tmux_session)
+        lock = _INJECT_LOCKS.get(key)
         if lock is None:
-            lock = _INJECT_LOCKS[tmux_session] = threading.RLock()
+            lock = _INJECT_LOCKS[key] = threading.RLock()
         return lock
 
 
 @contextlib.contextmanager
-def _hold_for_send(tmux_session: str):
+def _hold_for_send(host: str, tmux_session: str):
     """Hold a session's inject lock for one user-initiated send.
 
     Short timeout on purpose: the only thing that holds this lock for long is
@@ -364,7 +395,7 @@ def _hold_for_send(tmux_session: str):
     collision this guards against. Failing fast with 409 lets the caller retry
     once the TUI is up, instead of stalling the request for minutes.
     """
-    lock = _inject_lock(tmux_session)
+    lock = _inject_lock(host, tmux_session)
     if not lock.acquire(timeout=2.5):
         raise HTTPException(409, "Session is busy starting its agent CLI - retry in a moment")
     try:
@@ -393,7 +424,7 @@ def _refuse_if_bare_shell(pane: Optional[str], force: bool):
     ))
 
 
-def tmux_inject(tmux_session: str, text: str, send_enter: bool = True):
+def tmux_inject(host: str, tmux_session: str, text: str, send_enter: bool = True):
     """Type `text` into a session's TUI and submit it.
 
     Works the same for every agent CLI on the host (Claude Code, OpenCode,
@@ -419,12 +450,12 @@ def tmux_inject(tmux_session: str, text: str, send_enter: bool = True):
     # Held across paste AND the delayed Enter: those two calls are one indivisible
     # "type this and submit it", and anything squeezing between them corrupts the
     # line for both texts. See _INJECT_LOCKS.
-    with _inject_lock(tmux_session):
-        _run_tmux(tmux_session, ["load-buffer", "-b", buf, "-"], stdin_text=text)
-        _run_tmux(tmux_session, ["paste-buffer", "-d", "-p", "-b", buf, "-t", tmux_session])
+    with _inject_lock(host, tmux_session):
+        _run_tmux(host, ["load-buffer", "-b", buf, "-"], stdin_text=text)
+        _run_tmux(host, ["paste-buffer", "-d", "-p", "-b", buf, "-t", tmux_session])
         if send_enter:
             time.sleep(0.8)
-            _run_tmux(tmux_session, ["send-keys", "-t", tmux_session, "Enter"])
+            _run_tmux(host, ["send-keys", "-t", tmux_session, "Enter"])
 
 
 # Agent picked in the UI for picker-spawned sessions, keyed by branch. Needed
@@ -432,31 +463,42 @@ def tmux_inject(tmux_session: str, text: str, send_enter: bool = True):
 # guess says "claude" no matter what was picked. In-memory only — after a
 # restart the badge falls back to the group guess until pane detection corrects
 # the selected session.
-_PICKED_AGENTS: dict[str, str] = {}
+_PICKED_AGENTS: dict[tuple[str, str], str] = {}  # (host, branch) -> agent
 
 
 @app.get("/api/sessions")
-def list_sessions():
-    sessions = get_sessions()
+def list_sessions(host: str = Depends(_host)):
+    sessions = get_sessions(host)
     for s in sessions:
-        for branch, agent in _PICKED_AGENTS.items():
-            if branch in s.get("title", "") or branch in s.get("path", ""):
+        for (h, branch), agent in _PICKED_AGENTS.items():
+            if h == host and (branch in s.get("title", "") or branch in s.get("path", "")):
                 s["agent_hint"] = agent
                 break
     return sessions
 
 
-@app.get("/api/host")
-def get_host():
-    return {"host": REMOTE_HOST or "local"}
+@app.get("/api/hosts")
+def list_hosts():
+    """Registry + reachability, so the UI's host selector can grey out an
+    offline host. A local host is always reachable; a remote one is probed with
+    a 3 s connect timeout (ssh -o BatchMode=yes <alias> true)."""
+    def online(name: str) -> bool:
+        if not HOSTS[name]:
+            return True
+        try:
+            return subprocess.run(_ssh_wrap(name, ["true"], connect_timeout=3),
+                                  capture_output=True, timeout=10).returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            return False
+    return [{"name": n, "alias": HOSTS[n] or "local", "online": online(n)} for n in HOSTS]
 
 
 @app.get("/api/plans")
-def list_plans(verify: bool = False):
+def list_plans(verify: bool = False, host: str = Depends(_host)):
     """Plan Board data: cc-plan's read-only projection of /opt/cc-notes (schema 1).
     verify=true additionally checks typed UNBLOCKS evidence against git/GitHub."""
     cmd = ["cc-plan", "json", "--all"] + (["--verify"] if verify else [])
-    result = _run(cmd, timeout=60 if verify else 30)
+    result = _run(host, cmd, timeout=60 if verify else 30)
     if result.returncode != 0:
         raise HTTPException(502, f"cc-plan failed: {(result.stderr or '')[:300]}")
     try:
@@ -466,16 +508,16 @@ def list_plans(verify: bool = False):
 
 
 @app.post("/api/sessions/{session_id}/prompt")
-async def send_prompt(session_id: str, body: dict):
-    session = find_session(session_id)
+async def send_prompt(session_id: str, body: dict, host: str = Depends(_host)):
+    session = find_session(host, session_id)
     prompt = body.get("prompt", "").strip()
     if not prompt:
         raise HTTPException(400, "Empty prompt")
     tmux_session = session["tmux_session"]
-    pane = _capture_pane(tmux_session)
+    pane = _capture_pane(host, tmux_session)
     _refuse_if_bare_shell(pane, force=body.get("force") is True)
-    with _hold_for_send(tmux_session):
-        tmux_inject(tmux_session, prompt)
+    with _hold_for_send(host, tmux_session):
+        tmux_inject(host, tmux_session, prompt)
     # Classified from the pane the gate already captured, so this costs no extra
     # round-trip. Reported for the same reason the image route reports it: the
     # cheap group guess is wrong for regrouped or hand-launched sessions, and a
@@ -485,23 +527,23 @@ async def send_prompt(session_id: str, body: dict):
 
 
 @app.delete("/api/sessions/{session_id}")
-def reap_session(session_id: str, force: bool = False):
+def reap_session(session_id: str, force: bool = False, host: str = Depends(_host)):
     """Reap a session completely (container, deck entry, tmux, worktree, ledger).
     Refuses a dirty worktree unless force=true — cc-reap's own guard."""
-    session = find_session(session_id)
+    session = find_session(host, session_id)
     # Check the worktree BEFORE calling cc-reap. cc-reap removes the container and
     # the agent-deck entry first and only then refuses on uncommitted changes, so
     # its own guard fires when the session has already stopped existing — the
     # force retry would 404 on find_session and leave the worktree stranded.
     if not force:
-        dirty = _run(["git", "-C", session["path"], "status", "--porcelain"], timeout=20)
+        dirty = _run(host, ["git", "-C", session["path"], "status", "--porcelain"], timeout=20)
         if dirty.returncode == 0 and dirty.stdout.strip():
             raise HTTPException(409, (
                 f"{session['path']} has uncommitted changes — reap with force to discard:\n"
                 + "\n".join(dirty.stdout.strip().splitlines()[:5])
             ))
     cmd = ["cc-reap"] + (["--force"] if force else []) + [session["title"]]
-    result = _run(cmd, timeout=120)
+    result = _run(host, cmd, timeout=120)
     output = (result.stdout or "") + (result.stderr or "")
     if result.returncode != 0:
         raise HTTPException(409, output.strip()[-800:] or "cc-reap failed")
@@ -509,11 +551,11 @@ def reap_session(session_id: str, force: bool = False):
 
 
 @app.get("/api/sessions/{session_id}/agent")
-def session_agent(session_id: str):
+def session_agent(session_id: str, host: str = Depends(_host)):
     """Which CLI is live in this session — pane-probed, so it survives a session
     being regrouped or having a different agent launched in it by hand."""
-    session = find_session(session_id)
-    kind, source = detect_agent_kind(session)
+    session = find_session(host, session_id)
+    kind, source = detect_agent_kind(host, session)
     return {"agent": kind, "source": source}
 
 
@@ -522,13 +564,14 @@ async def send_image(
     session_id: str,
     file: UploadFile = File(...),
     prompt: Optional[str] = Form(None),
+    host: str = Depends(_host),
 ):
-    session = find_session(session_id)
+    session = find_session(host, session_id)
     # Pane-probed: the vision warning below is only right if we know which CLI
     # (and therefore which model family) is really on the other end. The same
     # capture drives the bare-shell gate — run it before the upload so a refusal
     # costs no scp.
-    pane = _capture_pane(session["tmux_session"])
+    pane = _capture_pane(host, session["tmux_session"])
     kind, _ = _kind_from_pane(pane, session)
     _refuse_if_bare_shell(pane, force=False)
     # The extension reaches a remote shell via scp's remote argument, so take it
@@ -546,9 +589,9 @@ async def send_image(
         tmp_path = tmp.name
 
     try:
-        if REMOTE_HOST:
+        if HOSTS[host]:
             subprocess.run(
-                ["scp", "-q", tmp_path, f"{REMOTE_HOST}:{shlex.quote(remote_path)}"],
+                ["scp", "-q", tmp_path, f"{HOSTS[host]}:{shlex.quote(remote_path)}"],
                 check=True,
                 timeout=120,
             )
@@ -569,8 +612,8 @@ async def send_image(
     inject = f"{prompt.strip()} {container_path}" if prompt and prompt.strip() \
         else f"Look at this image: {container_path}"
 
-    with _hold_for_send(session["tmux_session"]):
-        tmux_inject(session["tmux_session"], inject)
+    with _hold_for_send(host, session["tmux_session"]):
+        tmux_inject(host, session["tmux_session"], inject)
     resp = {"ok": True, "path": container_path, "agent": kind}
     if kind == "opencode":
         # OpenCode itself handles the image fine — its read tool returns an image
@@ -637,16 +680,16 @@ def list_agents():
 
 
 @app.get("/api/accounts")
-def list_accounts():
+def list_accounts(host: str = Depends(_host)):
     """Account aliases only; cc-account never prints credential contents."""
-    result = _run(["cc-account", "list"])
+    result = _run(host, ["cc-account", "list"])
     if result.returncode != 0:
         return []
     return [a for a in result.stdout.splitlines() if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", a)]
 
 
 @app.post("/api/sessions")
-def create_session(body: dict, background_tasks: BackgroundTasks):
+def create_session(body: dict, background_tasks: BackgroundTasks, host: str = Depends(_host)):
     repo = body.get("repo", "").strip()
     branch = body.get("branch", "").strip()
     agent = (body.get("agent") or "claude").strip().lower()
@@ -658,7 +701,7 @@ def create_session(body: dict, background_tasks: BackgroundTasks):
     if account and not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", account):
         raise HTTPException(400, "account has invalid characters")
     if account:
-        check = _run(["cc-account", "check", account])
+        check = _run(host, ["cc-account", "check", account])
         if check.returncode != 0:
             raise HTTPException(400, "unknown or unprovisioned account")
     # repo is either "owner/name" or a bare "name" (cc-spawn prepends its default
@@ -677,20 +720,20 @@ def create_session(body: dict, background_tasks: BackgroundTasks):
     # commands even though they're now regex-constrained (defense in depth).
     prefix = f"CC_ACCOUNT={shlex.quote(account)} " if account else ""
     spawn_cmd = f"{prefix}cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
-    window_id = _spawn_window(spawn_cmd, branch)
+    window_id = _spawn_window(host, spawn_cmd, branch)
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
-    _PICKED_AGENTS[branch] = agent
-    background_tasks.add_task(_launch_agent, branch, agent, window_id)
-    return {"ok": True, "agent": agent, "account": account or None}
+    _PICKED_AGENTS[(host, branch)] = agent
+    background_tasks.add_task(_launch_agent, host, branch, agent, window_id)
+    return {"ok": True, "agent": agent, "account": account or None, "host": host}
 
 
-def _wait_for_session(branch: str) -> Optional[dict]:
+def _wait_for_session(host: str, branch: str) -> Optional[dict]:
     """Poll agent-deck until the session spawned for `branch` registers."""
     time.sleep(15)  # initial wait for cc-spawn to clone and create the worktree
     for _ in range(33):  # 33 × 5 s + 15 s initial ≈ 3 min max
         time.sleep(5)
-        for s in get_sessions():
+        for s in get_sessions(host):
             if (branch in s.get("title", "") or branch in s.get("path", "")) \
                     and s.get("tmux_session"):
                 return s
@@ -704,7 +747,7 @@ def _shell_idle(pane: str) -> bool:
     return bool(lines) and lines[-1].endswith(("$", "#"))
 
 
-def _start_agent_cli(tmux_name: str, launcher: str, kind: str) -> bool:
+def _start_agent_cli(host: str, tmux_name: str, launcher: str, kind: str) -> bool:
     """Type `launcher` into the session's shell and wait for its TUI to be idle
     at the input box. Returns False on timeout (caller decides whether any
     follow-up injection proceeds best-effort).
@@ -726,13 +769,13 @@ def _start_agent_cli(tmux_name: str, launcher: str, kind: str) -> bool:
     re-sends) and merge with it. Sends arriving meanwhile get a fast 409 from
     _hold_for_send rather than corrupting the shell line.
     """
-    with _inject_lock(tmux_name):
+    with _inject_lock(host, tmux_name):
         sends = 1
-        tmux_inject(tmux_name, launcher)
+        tmux_inject(host, tmux_name, launcher)
         start = last_send = time.monotonic()
         while time.monotonic() < start + 240:
             time.sleep(5)
-            pane = _capture_pane(tmux_name)
+            pane = _capture_pane(host, tmux_name)
             if _repl_ready(pane, kind):
                 time.sleep(1)  # let the input box finish painting before any paste
                 return True
@@ -741,36 +784,36 @@ def _start_agent_cli(tmux_name: str, launcher: str, kind: str) -> bool:
             # Answer "2. Skip": each session is a fresh container, so updating here
             # only slows the launch and the image update is where upgrades belong.
             if pane and "Update available" in pane and "Skip" in pane:
-                _run_tmux(tmux_name, ["send-keys", "-t", tmux_name, "2", "Enter"])
+                _run_tmux(host, ["send-keys", "-t", tmux_name, "2", "Enter"])
                 continue
             if sends >= 4 or time.monotonic() - last_send < 30:
                 continue
             if not (pane and pane.strip()) or _shell_idle(pane):
-                tmux_inject(tmux_name, launcher)
+                tmux_inject(host, tmux_name, launcher)
                 sends += 1
                 last_send = time.monotonic()
         return False
 
 
-def _launch_agent(branch: str, agent: str, window_id: Optional[str] = None):
+def _launch_agent(host: str, branch: str, agent: str, window_id: Optional[str] = None):
     try:
-        session = _wait_for_session(branch)
+        session = _wait_for_session(host, branch)
         if not session:
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
                   f"{agent} not launched", flush=True)
             return
-        if not _start_agent_cli(session["tmux_session"], _LAUNCHERS[agent], agent):
+        if not _start_agent_cli(host, session["tmux_session"], _LAUNCHERS[agent], agent):
             print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
                   f"branch={branch}", flush=True)
     finally:
         # The session is registered and driven through its own tmux session by
         # now, so the scratch window's leftover attach is pure clutter. Reaped on
         # the timeout paths too — a stuck spawn shouldn't leak a window either.
-        _reap_spawn_window(window_id)
+        _reap_spawn_window(host, window_id)
 
 
 @secure_router.post("/api/sessions/from-task")
-def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
+def create_session_from_task(body: dict, background_tasks: BackgroundTasks, host: str = Depends(_host)):
     task_id      = body.get("task_id", "").strip()
     task_title   = body.get("task_title", "").strip()
     repo         = body.get("repo", "").strip()
@@ -822,22 +865,22 @@ def create_session_from_task(body: dict, background_tasks: BackgroundTasks):
         _release_branch(branch)
         raise HTTPException(429, "Too many concurrent spawns — try again shortly")
 
-    background_tasks.add_task(_spawn_and_inject, task_id, task_title, repo_arg, branch, prompt_extra)
-    return {"ok": True, "branch": branch}
+    background_tasks.add_task(_spawn_and_inject, host, task_id, task_title, repo_arg, branch, prompt_extra)
+    return {"ok": True, "branch": branch, "host": host}
 
 
-def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str, prompt_extra: str):
+def _spawn_and_inject(host: str, task_id: str, task_title: str, repo_arg: str, branch: str, prompt_extra: str):
     window_id = None
     try:
         # Idempotency: abort if a session for this branch already exists.
-        for s in get_sessions():
+        for s in get_sessions(host):
             if branch in s.get("title", "") or branch in s.get("path", ""):
                 return
 
         spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
-        window_id = _spawn_window(spawn_cmd, branch)
+        window_id = _spawn_window(host, spawn_cmd, branch)
 
-        session = _wait_for_session(branch)
+        session = _wait_for_session(host, branch)
         if not session:
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch} task_id={task_id}", flush=True)
             return
@@ -874,14 +917,14 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
         # tmux_inject pastes the multi-line prompt as one bracketed-paste block
         # and sends the submitting Enter after the burst settles, so no extra
         # Enter is needed here.
-        with _inject_lock(tmux_name):
-            if not _start_agent_cli(tmux_name, "ccd", "claude"):
+        with _inject_lock(host, tmux_name):
+            if not _start_agent_cli(host, tmux_name, "ccd", "claude"):
                 print(f"WARN: cc-dispatch REPL not confirmed ready after 150s; "
                       f"injecting anyway branch={branch} task_id={task_id}", flush=True)
-            tmux_inject(tmux_name, initial_prompt)
+            tmux_inject(host, tmux_name, initial_prompt)
 
     finally:
-        _reap_spawn_window(window_id)
+        _reap_spawn_window(host, window_id)
         _SPAWN_SEMAPHORE.release()
         # Held only through the blind window; once done, get_sessions sees the
         # real session and takes over dedup for any later post.
@@ -889,16 +932,16 @@ def _spawn_and_inject(task_id: str, task_title: str, repo_arg: str, branch: str,
 
 
 @app.get("/r/{filename}", response_class=HTMLResponse)
-def remote_file(filename: str):
-    """Serve an HTML file from ~/.html-out/ — local first, then SSH to remote host."""
+def remote_file(filename: str, host: str = Depends(_host)):
+    """Serve an HTML file from ~/.html-out/ — local first, then SSH to the host."""
     local_path = Path.home() / ".html-out" / filename
     if local_path.exists():
         return HTMLResponse(content=local_path.read_text())
-    if REMOTE_HOST:
-        result = _run(["cat", f"~/.html-out/{filename}"], timeout=10)
+    if HOSTS[host]:
+        result = _run(host, ["cat", f"~/.html-out/{filename}"], timeout=10)
         if result.returncode == 0:
             return HTMLResponse(content=result.stdout)
-    raise HTTPException(404, f"{filename} not found locally or on {REMOTE_HOST or 'remote'}")
+    raise HTTPException(404, f"{filename} not found locally or on {host}")
 
 
 app.include_router(secure_router)

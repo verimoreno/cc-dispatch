@@ -45,7 +45,9 @@
     background: var(--surface); border: 1px solid var(--line-strong);
     border-radius: 999px; padding: 4px 12px;
     font-size: 11.5px; color: var(--ink-soft); font-family: var(--mono);
+    appearance: none; cursor: pointer; outline: none;
   }
+  .host-badge:hover { color: var(--ink); }
   header .subtitle {
     color: var(--olive-ink); font-size: 11px; font-weight: 600;
     letter-spacing: 0.12em; text-transform: uppercase;
@@ -269,7 +271,7 @@
   .back-btn { display: none; }
   @media (max-width: 700px) {
     header { padding: 0 14px; gap: 10px; }
-    .host-badge, .fab-hint { display: none; }
+    .fab-hint { display: none; }
     .bar-link { padding: 10px 8px; }
 
     .sidebar { width: 100%; border-right: none; padding: 12px 12px 96px; gap: 8px; }
@@ -312,7 +314,7 @@
 
 <header>
   <h1>cc-dispatch</h1>
-  <span class="host-badge" id="host-badge">…</span>
+  <select class="host-badge" id="host-select" aria-label="Host"><option>…</option></select>
   <span class="subtitle" id="session-count">loading…</span>
   <div class="spacer"></div>
   <a class="bar-link" href="/plans.html">Plan Board</a>
@@ -365,6 +367,7 @@
   </div>
 </div>
 
+<script src="/host.js"></script>
 <script>
 let sessions = [];
 let activeId = null;
@@ -384,8 +387,10 @@ const dropzoneHTML = () => `
 // ── Fetch sessions ──────────────────────────────────────────────────────────
 
 async function fetchSessions() {
+  const h = host;
   try {
-    const data = await fetch('/api/sessions').then(r => r.json());
+    const data = await api('/api/sessions').then(r => r.json());
+    if (h !== host) return;   // answer from the host we just switched away from
     sessions = data;
     renderSidebar();
   } catch (e) {
@@ -393,12 +398,14 @@ async function fetchSessions() {
   }
 }
 
-fetch('/api/host').then(r => r.json()).then(d => {
-  document.getElementById('host-badge').textContent = d.host;
-});
+// Switching host: nothing selected carries over (ids are per host), and the
+// account list is per host too — the repo list is GitHub's and stays.
+initHostSelect(document.getElementById('host-select'), () => {
+  activeId = null; sessions = []; accountsLoaded = false;
+  renderSidebar(); renderCompose(); fetchSessions();
+}).then(fetchSessions);
 
 setInterval(fetchSessions, 5000);
-fetchSessions();
 
 // ── Which agent CLI drives a session — mirrors agent_kind() in main.py ──────
 // cc-spawn -> work/Claude Code · cc-arch|cc-code -> arch|code/OpenCode ·
@@ -465,7 +472,7 @@ async function reapSession() {
   reapArmed.busy = true;
   btn.disabled = true; btn.textContent = 'Reaping…';
   try {
-    const res = await fetch(`/api/sessions/${session.id}?force=${reapArmed.force}`, { method: 'DELETE' });
+    const res = await api(`/api/sessions/${session.id}?force=${reapArmed.force}`, { method: 'DELETE' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = data.detail || `reap failed (${res.status})`;
@@ -531,11 +538,12 @@ function renderCompose() {
   `;
 
   // Replace the metadata guess with what's actually running in the pane.
-  fetch(`/api/sessions/${session.id}/agent`)
+  const h = host;
+  api(`/api/sessions/${session.id}/agent`)
     .then(r => r.ok ? r.json() : null)
     .then(d => {
       const badge = document.getElementById('agent-badge');
-      if (!d || !badge || activeId !== session.id) return;
+      if (!d || !badge || activeId !== session.id || h !== host) return;
       badge.textContent = d.agent;
       badge.className = `agent-badge ${d.agent}`;
       badge.title = d.source === 'pane' ? 'detected from the live session' : 'guessed from the agent-deck group';
@@ -567,7 +575,7 @@ async function sendAll() {
       const form = new FormData();
       form.append('file', pendingImage);
       if (prompt) form.append('prompt', prompt);
-      const res = await fetch(`/api/sessions/${activeId}/image`, { method: 'POST', body: form });
+      const res = await api(`/api/sessions/${activeId}/image`, { method: 'POST', body: form });
       if (!res.ok) throw new Error(await errText(res));
       const data = await res.json();
       // data.note warns when the target CLI's model can't actually see images
@@ -577,7 +585,7 @@ async function sendAll() {
       else toast(`Sent → ${data.path}`, 'ok');
       clearImage();
     } else {
-      const res = await fetch(`/api/sessions/${activeId}/prompt`, {
+      const res = await api(`/api/sessions/${activeId}/prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
@@ -689,7 +697,7 @@ function openModal() {
   }
 
   if (!accountsLoaded) {
-    fetch('/api/accounts').then(r => r.json()).then(accounts => {
+    api('/api/accounts').then(r => r.json()).then(accounts => {
       const select = document.getElementById('new-account');
       select.innerHTML = '<option value="">my shared account</option>' +
         accounts.map(a => `<option value="${a}">${a}</option>`).join('');
@@ -795,7 +803,7 @@ async function createSession() {
   }
 
   try {
-    const res = await fetch('/api/sessions', {
+    const res = await api('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo, branch, agent: document.getElementById('new-agent').value,
@@ -803,7 +811,7 @@ async function createSession() {
     });
     if (!res.ok) throw new Error(await res.text());
     document.getElementById('modal-backdrop').classList.remove('open');
-    toast(`Spawning ${repo} / ${branch}…`, 'ok');
+    toast(`Spawning ${repo} / ${branch} on ${host}…`, 'ok');
     setTimeout(fetchSessions, 3000);
   } catch (e) {
     toast('Error: ' + e.message, 'err');

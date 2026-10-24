@@ -56,6 +56,11 @@
     padding: 6px 13px; background: var(--surface); cursor: pointer;
   }
   #refresh-chip[data-err="1"] { color: var(--danger); border-color: var(--danger); }
+  #host-select {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-soft);
+    border: 1px solid var(--line-strong); border-radius: 999px;
+    padding: 6px 13px; background: var(--surface); cursor: pointer; appearance: none; outline: none;
+  }
 
   /* masthead */
   .mast { padding: 26px 0 20px; }
@@ -281,6 +286,7 @@
   }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
+<script src="/host.js"></script>
 </head>
 <body>
 
@@ -289,6 +295,7 @@
     <span class="bar-mark"><span class="wide">cc-dispatch · </span>Plan Board</span>
     <nav class="bar-nav">
       <a href="/">Dashboard</a>
+      <select id="host-select" aria-label="Host"><option>…</option></select>
       <button id="refresh-chip" title="Refresh now">loading…</button>
     </nav>
   </div>
@@ -531,6 +538,7 @@ function renderPlan(p) {
   const h = el("h2"); h.append(el("span", null, p.plan)); head.append(h);
   const st = (p.status || "?").split(" ")[0];
   head.append(el("span", "badge st-" + (st === "active" ? "active" : "closed"), p.status || "unknown"));
+  head.append(el("span", "badge plain", "host · " + host));   // a plan lives on one host's /opt/cc-notes
   if (p.orchestrator) head.append(el("span", "badge plain", "orch · " + p.orchestrator));
   card.append(head);
   if (p.error) { card.append(el("p", "tk", p.error)); return card; }
@@ -565,7 +573,7 @@ function renderPlan(p) {
   board.append(svg);
 
   // list | graph toggle (persisted per plan; graph = the dependency diagram)
-  const viewKey = "ccview-" + p.plan;
+  const viewKey = `ccview-${host}-${p.plan}`;   // plan names repeat across hosts
   let view; try { view = localStorage.getItem(viewKey) || "list"; } catch { view = "list"; }
   const toggle = el("div", "vtoggle");
   const bList = el("button", view === "list" ? "on" : "", "list");
@@ -695,9 +703,11 @@ let timer = 30, ticking = null;
 async function refresh() {
   const chip = document.getElementById("refresh-chip");
   try {
-    const r = await fetch("/api/plans");
+    const h = host;
+    const r = await api("/api/plans");
     if (!r.ok) throw new Error("HTTP " + r.status);
     const plans = await r.json();
+    if (h !== host) return;   // switched host while waiting
     const counts = { working: 0, done: 0, blocked: 0, waiting: 0, attention: 0, asks: 0 };
     for (const p of plans) {
       counts.attention += (p.contradictions || []).length + (p.parser_errors || []).length;
@@ -749,7 +759,7 @@ function tick() {
 }
 document.getElementById("refresh-chip").addEventListener("click", refresh);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
-refresh();
+initHostSelect(document.getElementById("host-select"), () => { folds.clear(); refresh(); }).then(refresh);
 ticking = setInterval(tick, 1000);
 </script>
 </body>
