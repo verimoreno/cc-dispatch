@@ -111,22 +111,34 @@ alias** — the browser never talks to it, and nothing about auth changes.
 Plans are per host: a plan lives in one host's `/opt/cc-notes`, and the Plan
 Board labels each plan with its host.
 
-**Prerequisite, done by hand on hel (not by the installer):**
+**Prerequisite, done by hand (not by the installer):**
 
 ```bash
-# 1. hel's key on home
-ssh-copy-id -i ~/.ssh/id_ed25519.pub veri@<lm-server tailscale ip>   # or append to ~/.ssh/authorized_keys there
-# 2. alias in hel's ~/.ssh/config
+# 1. alias in hel's ~/.ssh/config (done 2026-10-24) + lm-server's host key in known_hosts
 cat >> ~/.ssh/config <<'EOF'
 Host lm-server
-    HostName <lm-server tailscale ip>
+    HostName 100.75.141.60
     User veri
 EOF
-# 3. verify — must print the hostname with no prompt
+ssh-keyscan 100.75.141.60 >> ~/.ssh/known_hosts
+# 2. verify — must print the hostname with no prompt
 ssh -o BatchMode=yes lm-server hostname
 ```
 
-Until step 3 passes, `home` shows as offline in the selector and its routes
+**lm-server runs Tailscale SSH** (`RunSSH: true`), which answers port 22 on the
+tailnet instead of OpenSSH and ignores `~/.ssh/authorized_keys` — hel's key is
+there but unused. Access is decided by the tailnet ACL, and the default SSH
+rule is `check`, which asks for a browser login and re-asks every 12 h, so an
+unattended ssh from the dashboard fails with "Tailscale SSH requires an
+additional check". Fix in the Tailscale admin console → Access controls, an
+`accept` rule for hel → lm-server placed in the `ssh` section (accept beats
+check when both match):
+
+```json
+{"action": "accept", "src": ["cc-host-hel"], "dst": ["lm-server"], "users": ["veri"]}
+```
+
+Until step 2 passes, `home` shows as offline in the selector and its routes
 return errors; hel is unaffected.
 
 ## Use it from the tablet
