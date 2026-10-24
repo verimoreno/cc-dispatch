@@ -88,6 +88,47 @@ supabase secrets set CC_DISPATCH_SECRET="$(grep -m1 '^CC_DISPATCH_SECRET=' ~/cc-
   --project-ref rapfwpvqarrndzhgkaox
 ```
 
+## Multi-host (hel + home)
+
+The dashboard on hel also drives a second fleet host, **home** (`lm-server`: a
+mirror of hel bootstrapped from this repo — same `cc-*` in `/usr/local/bin`,
+same `/opt/cc-notes` and `/opt/cc-data`). Pick the host in the top bar; the
+pick is saved in the browser and every API call carries it as `?host=`.
+`GET /api/hosts` reports reachability so an offline host is greyed out.
+
+Registry in `.env`:
+
+```
+CC_DISPATCH_HOSTS=hel=local,home=lm-server    # name=ssh alias; local = this box
+```
+
+The first entry is the default, so callers that never pass `?host=` (the
+Supabase `from-task` webhook, old bookmarks) keep landing on hel. An `.env`
+with only `CC_DISPATCH_HOST` still boots: empty → `hel=local`.
+
+A remote host is only ever reached **from the dashboard process, over its ssh
+alias** — the browser never talks to it, and nothing about auth changes.
+Plans are per host: a plan lives in one host's `/opt/cc-notes`, and the Plan
+Board labels each plan with its host.
+
+**Prerequisite, done by hand on hel (not by the installer):**
+
+```bash
+# 1. hel's key on home
+ssh-copy-id -i ~/.ssh/id_ed25519.pub veri@<lm-server tailscale ip>   # or append to ~/.ssh/authorized_keys there
+# 2. alias in hel's ~/.ssh/config
+cat >> ~/.ssh/config <<'EOF'
+Host lm-server
+    HostName <lm-server tailscale ip>
+    User veri
+EOF
+# 3. verify — must print the hostname with no prompt
+ssh -o BatchMode=yes lm-server hostname
+```
+
+Until step 3 passes, `home` shows as offline in the selector and its routes
+return errors; hel is unaffected.
+
 ## Use it from the tablet
 
 Open in the browser and bookmark:
@@ -98,7 +139,8 @@ http://cc-host-hel:7822/          # tailnet only; type http:// — it has no TLS
 http://<tailscale-ip>:7822/       # e.g. http://100.100.213.79:7822/
 ```
 
-- **+ New session** → pick repo + branch → Spawn.
+- **Host** selector in the top bar → hel or home (greyed out when unreachable).
+- **+ New session** → pick repo + branch → Spawn (on the selected host).
 - Tap a session → type a prompt → **Send** (Ctrl+Enter) to inject into it.
 
 ## Managing the service (on the host)
