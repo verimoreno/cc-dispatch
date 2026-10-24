@@ -169,7 +169,7 @@ contradictions pass). Install elsewhere with `scripts/install-skills.sh`.
 
 - `http://100.100.213.79:7822/` — dispatch dashboard (sessions, prompt/image
   injection, spawn picker; PageFab `n`). Host selector in the top bar: the
-  registry is `CC_DISPATCH_HOSTS` (`hel=local,home=lm-server`); every API route
+  registry is `CC_DISPATCH_HOSTS` (`hel=local,lm-server=lm-server`); every API route
   takes `?host=`, default first entry. See deploy/README.md, Multi-host.
 - `http://100.100.213.79:7822/plans.html` — Plan Board: KPIs, per-plan cards,
   **LIST | GRAPH** toggle (dependency DAG: waves as columns, verified handoffs

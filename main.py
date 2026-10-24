@@ -17,7 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, HT
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-# Host registry: CC_DISPATCH_HOSTS="hel=local,home=lm-server" — name=ssh alias,
+# Host registry: CC_DISPATCH_HOSTS="hel=local,lm-server=lm-server" — name=ssh alias,
 # alias "local" (or empty) = run on this box. The first entry is the default
 # for every route called without ?host=. CC_DISPATCH_HOST (one alias, empty =
 # local) still works as a one-host fallback so an existing .env keeps booting.

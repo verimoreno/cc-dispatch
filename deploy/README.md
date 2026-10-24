@@ -88,9 +88,9 @@ supabase secrets set CC_DISPATCH_SECRET="$(grep -m1 '^CC_DISPATCH_SECRET=' ~/cc-
   --project-ref rapfwpvqarrndzhgkaox
 ```
 
-## Multi-host (hel + home)
+## Multi-host (hel + lm-server)
 
-The dashboard on hel also drives a second fleet host, **home** (`lm-server`: a
+The dashboard on hel also drives a second fleet host, **lm-server** (a
 mirror of hel bootstrapped from this repo — same `cc-*` in `/usr/local/bin`,
 same `/opt/cc-notes` and `/opt/cc-data`). Pick the host in the top bar; the
 pick is saved in the browser and every API call carries it as `?host=`.
@@ -99,7 +99,7 @@ pick is saved in the browser and every API call carries it as `?host=`.
 Registry in `.env`:
 
 ```
-CC_DISPATCH_HOSTS=hel=local,home=lm-server    # name=ssh alias; local = this box
+CC_DISPATCH_HOSTS=hel=local,lm-server=lm-server    # name=ssh alias; local = this box
 ```
 
 The first entry is the default, so callers that never pass `?host=` (the
@@ -138,7 +138,7 @@ check when both match):
 {"action": "accept", "src": ["cc-host-hel"], "dst": ["lm-server"], "users": ["veri"]}
 ```
 
-Until step 2 passes, `home` shows as offline in the selector and its routes
+Until step 2 passes, `lm-server` shows as offline in the selector and its routes
 return errors; hel is unaffected.
 
 ## Use it from the tablet
@@ -151,7 +151,7 @@ http://cc-host-hel:7822/          # tailnet only; type http:// — it has no TLS
 http://<tailscale-ip>:7822/       # e.g. http://100.100.213.79:7822/
 ```
 
-- **Host** selector in the top bar → hel or home (greyed out when unreachable).
+- **Host** selector in the top bar → hel or lm-server (greyed out when unreachable).
 - **+ New session** → pick repo + branch → Spawn (on the selected host).
 - Tap a session → type a prompt → **Send** (Ctrl+Enter) to inject into it.
 
