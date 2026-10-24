@@ -37,7 +37,7 @@ else
 # Host registry: name=ssh-alias, comma-separated; "local" = this box. The first
 # entry is the default for API calls without ?host=. A remote host is reached
 # only from this process over its ssh alias (see deploy/README.md, Multi-host).
-CC_DISPATCH_HOSTS=hel=local,home=lm-server
+CC_DISPATCH_HOSTS=hel=local,lm-server=lm-server
 # Legacy one-host setting, ignored when CC_DISPATCH_HOSTS is set.
 CC_DISPATCH_HOST=
 # 64-char hex, generated once. Regenerate with:
@@ -57,9 +57,9 @@ fi
 grep -qE '^CC_DISPATCH_BIND=' .env || echo 'CC_DISPATCH_BIND=auto' >> .env
 grep -qE '^CC_DISPATCH_PORT=' .env || echo 'CC_DISPATCH_PORT=7822' >> .env
 # Multi-host: an old .env has only CC_DISPATCH_HOST. Add the registry (this box
-# stays the default host); the "home" entry shows as offline until the ssh
+# stays the default host); the "lm-server" entry shows as offline until the ssh
 # prerequisite in deploy/README.md is done.
-grep -qE '^CC_DISPATCH_HOSTS=' .env || echo 'CC_DISPATCH_HOSTS=hel=local,home=lm-server' >> .env
+grep -qE '^CC_DISPATCH_HOSTS=' .env || echo 'CC_DISPATCH_HOSTS=hel=local,lm-server=lm-server' >> .env
 
 PORT="$(grep -E '^CC_DISPATCH_PORT=' .env | head -n1 | cut -d= -f2-)"
 PORT="${PORT:-7822}"

@@ -46,7 +46,7 @@ prompts, running unattended.
 | control-plane integrity | git + deploy.sh --check (drift detection) | silent host edits |
 | coordination truth | typed UNBLOCKS + cc-plan verify | agents releasing dependencies on false claims |
 | task metadata | untrusted-fencing in injected prompts | instruction smuggling from the task system |
-| dashboard ↔ second host | ssh alias from the dashboard process only (`CC_DISPATCH_HOSTS`); the browser never reaches it | a tailnet device talking to home directly — it can't, home has no dashboard |
+| dashboard ↔ second host | ssh alias from the dashboard process only (`CC_DISPATCH_HOSTS`); the browser never reaches it | a tailnet device talking to lm-server directly — it can't, lm-server has no dashboard |
 
 ## Residual risks, ranked — the honest list
 
