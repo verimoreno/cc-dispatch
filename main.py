@@ -812,11 +812,19 @@ def _launch_agent(host: str, branch: str, agent: str, window_id: Optional[str] =
         tmux_name = session["tmux_session"]
         # One lock hold across launch + first prompt, as in _spawn_and_inject.
         with _inject_lock(host, tmux_name):
-            if not _start_agent_cli(host, tmux_name, _LAUNCHERS[agent], agent):
+            ready = _start_agent_cli(host, tmux_name, _LAUNCHERS[agent], agent)
+            if not ready:
                 print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
                       f"branch={branch}", flush=True)
             if prompt:
-                tmux_inject(host, tmux_name, prompt)
+                # Best-effort when not confirmed ready, but never into a bare
+                # shell: bash would run the prompt's lines as commands.
+                pane = None if ready else _capture_pane(host, tmux_name)
+                if pane and _shell_idle(pane):
+                    print(f"ERROR: cc-dispatch {agent} not running; prompt dropped "
+                          f"branch={branch}", flush=True)
+                else:
+                    tmux_inject(host, tmux_name, prompt)
     finally:
         # The session is registered and driven through its own tmux session by
         # now, so the scratch window's leftover attach is pure clutter. Reaped on
