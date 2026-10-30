@@ -694,6 +694,12 @@ def create_session(body: dict, background_tasks: BackgroundTasks, host: str = De
     branch = body.get("branch", "").strip()
     agent = (body.get("agent") or "claude").strip().lower()
     account = (body.get("account") or "").strip().lower()
+    # Optional first prompt, typed into the agent once its TUI is up — how a
+    # session spawns a sibling (see host/fleet/CLAUDE.md.tmpl). Newlines are
+    # fine (tmux_inject pastes one bracketed block); other control chars aren't.
+    prompt = (body.get("prompt") or "").strip()
+    if len(prompt) > 4000 or re.search(r"[\x00-\x08\x0b-\x1f\x7f]", prompt):
+        raise HTTPException(400, "prompt contains control characters or exceeds 4000 chars")
     if not repo or not branch:
         raise HTTPException(400, "repo and branch required")
     if agent not in _LAUNCHERS:
@@ -724,7 +730,7 @@ def create_session(body: dict, background_tasks: BackgroundTasks, host: str = De
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
     _PICKED_AGENTS[(host, branch)] = agent
-    background_tasks.add_task(_launch_agent, host, branch, agent, window_id)
+    background_tasks.add_task(_launch_agent, host, branch, agent, window_id, prompt)
     return {"ok": True, "agent": agent, "account": account or None, "host": host}
 
 
@@ -795,16 +801,22 @@ def _start_agent_cli(host: str, tmux_name: str, launcher: str, kind: str) -> boo
         return False
 
 
-def _launch_agent(host: str, branch: str, agent: str, window_id: Optional[str] = None):
+def _launch_agent(host: str, branch: str, agent: str, window_id: Optional[str] = None,
+                  prompt: str = ""):
     try:
         session = _wait_for_session(host, branch)
         if not session:
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
                   f"{agent} not launched", flush=True)
             return
-        if not _start_agent_cli(host, session["tmux_session"], _LAUNCHERS[agent], agent):
-            print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
-                  f"branch={branch}", flush=True)
+        tmux_name = session["tmux_session"]
+        # One lock hold across launch + first prompt, as in _spawn_and_inject.
+        with _inject_lock(host, tmux_name):
+            if not _start_agent_cli(host, tmux_name, _LAUNCHERS[agent], agent):
+                print(f"WARN: cc-dispatch {agent} TUI not confirmed ready after 150s "
+                      f"branch={branch}", flush=True)
+            if prompt:
+                tmux_inject(host, tmux_name, prompt)
     finally:
         # The session is registered and driven through its own tmux session by
         # now, so the scratch window's leftover attach is pure clutter. Reaped on

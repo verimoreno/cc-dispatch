@@ -107,3 +107,20 @@ weight fits), and the final rule (step 6).
    evidence (the `pr` form) + a `HANDOFF:` block. Merging is a human decision — feedback may arrive later
    in this same session; treat it as a return to step 3.
 <!-- /plan-notes-directive -->
+
+# Spawning a sibling session
+
+When asked to start another session on this host ("create a session for that card",
+"spawn a session for X"), do it yourself — same flow as the dashboard (worktree +
+container + agent), via this host's cc-dispatch:
+
+    curl -sf "$CC_DISPATCH_URL/api/sessions" -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg repo owner/name --arg branch feat/<slug> --arg prompt '<task>' \
+            '{repo:$repo, branch:$branch, agent:"claude", prompt:$prompt}')"
+
+- `repo`: `git remote get-url origin` → `owner/name` (any repo is fine, not just yours).
+- `branch`: new and unique; it names the container. `agent`: claude | codex | opencode.
+- `prompt` (≤ 4000 chars) is typed into the new agent once its TUI is up (~1–3 min).
+  Make it self-contained: for a card, give the task id and say to `get_task` it.
+  Long brief? Write it to `/opt/cc-notes/` and pass a one-line pointer.
+- `$CC_DISPATCH_URL` empty → not enabled on this host; say so instead of improvising.

@@ -72,6 +72,9 @@ services:
       - PLAYWRIGHT_BROWSERS_PATH=/home/pwuser/.cache/ms-playwright
       - TIKTOKEN_CACHE_DIR=/home/pwuser/.cache/tiktoken
       - CC_HOST_MODE=autonomous
+      # This host's cc-dispatch (network_mode: host reaches its tailnet bind);
+      # lets a session spawn a sibling — see host/fleet/CLAUDE.md.tmpl
+      - CC_DISPATCH_URL=${CC_DISPATCH_URL:-}
 
     # ---- Resource caps (host reality: 62 GiB RAM, 12 threads) ----
     # Dynamic per-spawn cap: 3g default (Claude Code + tsc/vitest peaks ≈ 2G),
