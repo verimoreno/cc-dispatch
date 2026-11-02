@@ -188,6 +188,27 @@ def _spawn_window(host: str, spawn_cmd: str, window_name: str) -> Optional[str]:
     return window_id if window_id.startswith("@") else None
 
 
+_SPAWN_FAILED = "cc-spawn failed"
+
+
+def _spawn_failure(host: str, window_id: Optional[str]) -> Optional[str]:
+    """cc-spawn's error if it died in its scratch window, else None. Wrapped
+    spawn commands park on failure (see _spawn_cmd) so the reason survives."""
+    if not window_id:
+        return None
+    pane = _capture_pane(host, window_id) or ""
+    if _SPAWN_FAILED not in pane:
+        return None
+    errs = [l.strip() for l in pane.splitlines() if l.strip().startswith("ERROR")]
+    return "; ".join(errs) or pane.strip().splitlines()[-1]
+
+
+def _spawn_cmd(cmd: str) -> str:
+    """cc-spawn ends by exec-ing an attach, so it only returns on failure: park
+    the window then, or tmux closes it and the error is lost."""
+    return f'{cmd} || {{ echo "{_SPAWN_FAILED} (exit $?)"; sleep 600; }}'
+
+
 def _reap_spawn_window(host: str, window_id: Optional[str]):
     """Close a finished scratch window (it's parked on `agent-deck session
     attach`, which never exits on its own). Killing it only detaches that client
@@ -725,8 +746,15 @@ def create_session(body: dict, background_tasks: BackgroundTasks, host: str = De
     # reaches the shell — matching _spawn_and_inject — so repo/branch can't inject
     # commands even though they're now regex-constrained (defense in depth).
     prefix = f"CC_ACCOUNT={shlex.quote(account)} " if account else ""
-    spawn_cmd = f"{prefix}cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
+    spawn_cmd = _spawn_cmd(f"{prefix}cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}")
     window_id = _spawn_window(host, spawn_cmd, branch)
+    # cc-spawn's preflight (disk, repo, account) fails within a second or two —
+    # report that in the response instead of a 200 that silently never spawns.
+    time.sleep(3)
+    err = _spawn_failure(host, window_id)
+    if err:
+        _reap_spawn_window(host, window_id)
+        raise HTTPException(500, f"cc-spawn failed: {err}")
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
     _PICKED_AGENTS[(host, branch)] = agent
@@ -734,11 +762,15 @@ def create_session(body: dict, background_tasks: BackgroundTasks, host: str = De
     return {"ok": True, "agent": agent, "account": account or None, "host": host}
 
 
-def _wait_for_session(host: str, branch: str) -> Optional[dict]:
-    """Poll agent-deck until the session spawned for `branch` registers."""
-    time.sleep(15)  # initial wait for cc-spawn to clone and create the worktree
-    for _ in range(33):  # 33 × 5 s + 15 s initial ≈ 3 min max
+def _wait_for_session(host: str, branch: str, window_id: Optional[str] = None) -> Optional[dict]:
+    """Poll agent-deck until the session spawned for `branch` registers.
+    Gives up early if cc-spawn died in its scratch window."""
+    for _ in range(39):  # 39 × 5 s ≈ 3 min max
         time.sleep(5)
+        err = _spawn_failure(host, window_id)
+        if err:
+            print(f"ERROR: cc-spawn failed branch={branch}: {err}", flush=True)
+            return None
         for s in get_sessions(host):
             if (branch in s.get("title", "") or branch in s.get("path", "")) \
                     and s.get("tmux_session"):
@@ -804,9 +836,9 @@ def _start_agent_cli(host: str, tmux_name: str, launcher: str, kind: str) -> boo
 def _launch_agent(host: str, branch: str, agent: str, window_id: Optional[str] = None,
                   prompt: str = ""):
     try:
-        session = _wait_for_session(host, branch)
+        session = _wait_for_session(host, branch, window_id)
         if not session:
-            print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
+            print(f"ERROR: cc-dispatch no session for branch={branch}; "
                   f"{agent} not launched", flush=True)
             return
         tmux_name = session["tmux_session"]
@@ -897,10 +929,10 @@ def _spawn_and_inject(host: str, task_id: str, task_title: str, repo_arg: str, b
             if branch in s.get("title", "") or branch in s.get("path", ""):
                 return
 
-        spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
+        spawn_cmd = _spawn_cmd(f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}")
         window_id = _spawn_window(host, spawn_cmd, branch)
 
-        session = _wait_for_session(host, branch)
+        session = _wait_for_session(host, branch, window_id)
         if not session:
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch} task_id={task_id}", flush=True)
             return

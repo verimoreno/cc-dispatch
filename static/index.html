@@ -809,7 +809,7 @@ async function createSession() {
       body: JSON.stringify({ repo, branch, agent: document.getElementById('new-agent').value,
         account: document.getElementById('new-account').value }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) throw new Error(await errText(res));
     document.getElementById('modal-backdrop').classList.remove('open');
     toast(`Spawning ${repo} / ${branch} on ${host}…`, 'ok');
     setTimeout(fetchSessions, 3000);
