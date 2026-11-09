@@ -23,5 +23,19 @@ class Hosts(unittest.TestCase):
             main._host("nope")
 
 
+
+class SpawnFailure(unittest.TestCase):
+    def test_parked_error_is_reported(self):
+        pane = "→ Repo: x\nERROR: <30G disk free on /home\ncc-spawn failed (exit 2)\n"
+        orig = main._capture_pane
+        try:
+            main._capture_pane = lambda h, t: pane
+            self.assertEqual(main._spawn_failure("hel", "@1"), "ERROR: <30G disk free on /home")
+            main._capture_pane = lambda h, t: "→ Repo: x\ncloning...\n"
+            self.assertIsNone(main._spawn_failure("hel", "@1"))
+            self.assertIsNone(main._spawn_failure("hel", None))
+        finally:
+            main._capture_pane = orig
+
 if __name__ == "__main__":
     unittest.main()

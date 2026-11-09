@@ -307,6 +307,77 @@
     .repo-list-item { padding: 12px 13px; }
   }
 
+  /* ── quick spawn + leaderboard ── */
+  .quick { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .quick-btn {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    background: transparent; border: 1px dashed var(--line-strong); border-radius: 8px;
+    color: var(--ink-soft); font-family: var(--mono); font-size: 12px;
+    padding: 7px 10px; cursor: pointer; text-align: left;
+  }
+  .quick-btn:hover { border-color: var(--accent); border-style: solid; color: var(--ink); background: var(--accent-soft); }
+  .quick-btn:disabled { opacity: 0.5; cursor: progress; }
+  .quick-btn .plus { color: var(--accent); font-weight: 700; }
+  .quick-btn .n { margin-left: auto; color: var(--ink-faint); font-size: 10.5px; }
+
+  .pad { flex: 1; overflow-y: auto; padding: 28px 32px 96px; display: flex; flex-direction: column; gap: 28px; }
+  .pad h2 { font-family: var(--serif); font-weight: 400; font-size: 26px; letter-spacing: -0.01em; }
+  .pad .sub { color: var(--ink-faint); font-size: 12.5px; margin-top: 2px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .tile {
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; cursor: pointer; text-align: left; color: var(--ink);
+    font-family: var(--sans); display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 0.12s, transform 0.12s;
+  }
+  .tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .tile:disabled { opacity: 0.5; cursor: progress; transform: none; }
+  .tile .t-name { font-family: var(--mono); font-weight: 600; font-size: 13.5px; display: flex; justify-content: space-between; }
+  .tile .t-name span { color: var(--accent); }
+  .tile .t-owner { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); margin-top: -8px; }
+  .tile .t-stats { display: flex; gap: 14px; font-size: 11.5px; color: var(--ink-soft); font-family: var(--mono); }
+  .tile .t-stats b { color: var(--ink); font-weight: 600; }
+  .board { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .board th {
+    text-align: left; font-family: var(--mono); font-size: 10px; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--olive-ink);
+    padding: 0 10px 8px; border-bottom: 1px solid var(--line);
+  }
+  .board td { padding: 8px 10px; border-bottom: 1px solid var(--line); font-family: var(--mono); color: var(--ink-soft); white-space: nowrap; }
+  .board td.num, .board th.num { text-align: right; }
+  .board .rank { color: var(--ink-faint); width: 28px; }
+  .board .repo { color: var(--ink); width: 100%; }
+  .board .bar { height: 4px; background: var(--accent); border-radius: 2px; margin-top: 5px; opacity: 0.7; }
+  .board tr:first-child .bar { opacity: 1; }
+  .board .live { color: var(--ok); }
+  .board .fail { color: var(--danger); }
+  .board .go {
+    background: none; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--ink-soft);
+    font-family: var(--mono); font-size: 11px; padding: 2px 10px; cursor: pointer;
+  }
+  .board .go:hover { color: var(--accent); border-color: var(--accent); }
+  .tile.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .spawn-box {
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .spawn-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); }
+  .spawn-head b { color: var(--ink); font-weight: 600; }
+  .spawn-head select {
+    max-width: 320px; background: var(--ground); border: 1px solid var(--line-strong); border-radius: 7px;
+    color: var(--ink); font-family: var(--mono); font-size: 12.5px; font-weight: 600; padding: 6px 10px; outline: none; cursor: pointer;
+  }
+  .spawn-head select:focus { border-color: var(--accent); }
+  .spawn-head input {
+    flex: 1; min-width: 180px; background: var(--ground); border: 1px solid var(--line); border-radius: 7px;
+    color: var(--ink); font-family: var(--mono); font-size: 12.5px; padding: 6px 10px; outline: none;
+  }
+  .spawn-head input:focus { border-color: var(--accent); }
+  .reroll { background: none; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--ink-soft); cursor: pointer; padding: 5px 9px; font-size: 13px; }
+  .reroll:hover { color: var(--accent); border-color: var(--accent); }
+  .spawn-box textarea { min-height: 90px; }
+  @media (max-width: 700px) { .pad { padding: 18px 14px 96px; } }
+
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -401,11 +472,12 @@ async function fetchSessions() {
 // Switching host: nothing selected carries over (ids are per host), and the
 // account list is per host too — the repo list is GitHub's and stays.
 initHostSelect(document.getElementById('host-select'), () => {
-  activeId = null; sessions = []; accountsLoaded = false;
-  renderSidebar(); renderCompose(); fetchSessions();
-}).then(fetchSessions);
+  activeId = null; sessions = []; stats = []; accountsLoaded = false;
+  renderSidebar(); renderCompose(); fetchSessions(); fetchStats();
+}).then(() => { fetchSessions(); fetchStats(); });
 
 setInterval(fetchSessions, 5000);
+setInterval(fetchStats, 60000);
 
 // ── Which agent CLI drives a session — mirrors agent_kind() in main.py ──────
 // cc-spawn -> work/Claude Code · cc-arch|cc-code -> arch|code/OpenCode ·
@@ -433,12 +505,13 @@ function renderSidebar() {
   const count = document.getElementById('session-count');
   count.textContent = `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`;
 
+  const quick = quickHTML();
   if (!sessions.length) {
-    el.innerHTML = '<div class="empty-sidebar"><p class="v">No sessions running.</p><span class="a">Spawn one with the + button →</span></div>';
+    el.innerHTML = quick + '<div class="empty-sidebar"><p class="v">No sessions running.</p><span class="a">Spawn one with the + button →</span></div>';
     return;
   }
 
-  el.innerHTML = '<div class="side-kicker">Sessions</div>' + sessions.map(s => `
+  el.innerHTML = quick + '<div class="side-kicker">Sessions</div>' + sessions.map(s => `
     <div class="session-card ${s.id === activeId ? 'active' : ''}" onclick="selectSession('${s.id}')">
       <div class="session-title" title="${s.title}">${s.title}</div>
       <div class="session-meta">
@@ -449,6 +522,216 @@ function renderSidebar() {
       </div>
     </div>
   `).join('');
+}
+
+// ── Quick spawn + leaderboard (from the host's cc-ledger history) ───────────
+
+let stats = [];             // [{repo, total, week, live, failed, last}] most-spawned first
+const spawning = new Set(); // repos with a quick spawn in flight
+const QUICK_N = 4;
+
+async function fetchStats() {
+  const h = host;
+  try {
+    const data = await api('/api/stats').then(r => r.json());
+    if (h !== host) return;
+    stats = data;
+    renderSidebar();
+    refreshPad();
+  } catch (e) { console.error('fetch stats failed', e); }
+}
+
+// Re-render only the tiles and leaderboard so a half-typed prompt, branch or
+// attached image in the composer between them survives the refresh.
+function refreshPad() {
+  if (activeId) return;
+  const t = document.getElementById('pad-tiles'), b = document.getElementById('pad-board');
+  if (t && b) { t.innerHTML = tilesHTML(); b.innerHTML = boardHTML(); } else renderCompose();
+}
+
+const short = repo => repo.split('/')[1];
+const ago = iso => {
+  if (!iso) return '—';
+  const m = (Date.now() - Date.parse(iso)) / 60000;
+  return m < 60 ? `${Math.max(1, m | 0)}m` : m < 1440 ? `${m / 60 | 0}h` : `${m / 1440 | 0}d`;
+};
+
+function quickHTML() {
+  if (!stats.length) return '';
+  return '<div class="side-kicker">Quick spawn</div><div class="quick">' +
+    stats.slice(0, QUICK_N).map(r => `
+      <button class="quick-btn" onclick="quickSpawn('${r.repo}')" ${spawning.has(r.repo) ? 'disabled' : ''}
+              title="Spawn ${r.repo} on a random branch, no prompt">
+        <span class="plus">+</span>${short(r.repo)}<span class="n">${spawning.has(r.repo) ? '…' : r.total}</span>
+      </button>`).join('') + '</div>';
+}
+
+let padRepo = null;   // repo the launchpad composer spawns into
+
+function launchpadHTML() {
+  if (!stats.length) return '<div class="no-session"><div class="card"><p class="v">No session selected.</p><p class="a">Pick one on the left →</p></div></div>';
+  if (!padRepo) padRepo = stats[0].repo;
+  return `<div class="pad">
+    <section>
+      <h2>Launchpad</h2>
+      <p class="sub">Pick a repo and branch, add a prompt or image if you like, and spawn Claude on ${host}.</p>
+    </section>
+    <div id="pad-tiles">${tilesHTML()}</div>
+    <section class="spawn-box">
+      <div class="spawn-head">
+        <span>spawn into</span>
+        <select id="pad-repo" onchange="selectPadRepo(this.value)" title="Any repo — yours first, then everything on GitHub">${repoOptionsHTML()}</select>
+        <span>@</span>
+        <input id="pad-branch" list="pad-branches" value="${randomBranch()}" autocomplete="off" spellcheck="false"
+               title="Random by default — pick an existing branch from the list or type one">
+        <datalist id="pad-branches"></datalist>
+        <button class="reroll" onclick="document.getElementById('pad-branch').value = randomBranch()" title="New random branch name">↻</button>
+      </div>
+      <textarea id="prompt-input" placeholder="First prompt — optional${TOUCH ? '' : ' (Ctrl+Enter to spawn)'}" rows="4"></textarea>
+      <div id="image-area">${pendingImage ? '' : dropzoneHTML()}</div>
+      <div class="send-row">
+        <span class="hint" id="send-hint">${SEND_HINT}</span>
+        <button class="send-btn" id="send-btn" onclick="padSpawn()">Spawn</button>
+      </div>
+    </section>
+    <div id="pad-board">${boardHTML()}</div>
+  </div>`;
+}
+
+function tilesHTML() {
+  return `<div class="tiles">${stats.slice(0, QUICK_N).map(r => `
+    <button class="tile ${r.repo === padRepo ? 'sel' : ''}" onclick="selectPadRepo('${r.repo}')">
+      <div class="t-name">${short(r.repo)} <span>${r.repo === padRepo ? '●' : ''}</span></div>
+      <div class="t-owner">${r.repo.split('/')[0]}</div>
+      <div class="t-stats"><span><b>${r.total}</b> total</span><span><b>${r.week}</b> 7d</span><span><b>${r.live}</b> live</span></div>
+    </button>`).join('')}
+  </div>`;
+}
+
+function boardHTML() {
+  const max = stats[0].total;
+  return `<section>
+    <div class="side-kicker" style="padding-left:0">Leaderboard · sessions per repo</div>
+    <table class="board">
+      <thead><tr><th>#</th><th>Repo</th><th class="num">Total</th><th class="num">7d</th><th class="num">Live</th><th class="num">Failed</th><th class="num">Last</th><th></th></tr></thead>
+      <tbody>${stats.map((r, i) => `
+        <tr>
+          <td class="rank">${i + 1}</td>
+          <td class="repo">${r.repo}<div class="bar" style="width:${(r.total / max * 100).toFixed(1)}%"></div></td>
+          <td class="num">${r.total}</td>
+          <td class="num">${r.week || '·'}</td>
+          <td class="num ${r.live ? 'live' : ''}">${r.live || '·'}</td>
+          <td class="num ${r.failed ? 'fail' : ''}">${r.failed || '·'}</td>
+          <td class="num">${ago(r.last)}</td>
+          <td><button class="go" onclick="selectPadRepo('${r.repo}', true)">select</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </section>`;
+}
+
+// Wire up the composer after the launchpad renders: Ctrl+Enter, branch list.
+function padInit() {
+  const input = document.getElementById('prompt-input');
+  if (!input || activeId) return;
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); padSpawn(); }
+  });
+  if (pendingImage) setImage(pendingImage);
+  loadPadBranches();
+  loadAllRepos();
+}
+
+// Leaderboard repos first (most-spawned), then every other GitHub repo.
+function repoOptionsHTML() {
+  const mine = stats.map(r => r.repo);
+  const rest = allRepos.map(r => r.full_name).filter(n => !mine.includes(n)).sort();
+  if (padRepo && !mine.includes(padRepo) && !rest.includes(padRepo)) rest.unshift(padRepo);
+  const opt = n => `<option value="${n}" ${n === padRepo ? 'selected' : ''}>${n}</option>`;
+  return `<optgroup label="Your repos">${mine.map(opt).join('')}</optgroup>` +
+    (rest.length ? `<optgroup label="All repos">${rest.map(opt).join('')}</optgroup>`
+                 : '<option disabled>loading the rest from GitHub…</option>');
+}
+
+function loadAllRepos() {
+  if (allRepos.length) return;
+  fetch('/api/github/repos').then(r => r.json()).then(repos => {
+    allRepos = repos;
+    const sel = document.getElementById('pad-repo');
+    if (sel) sel.innerHTML = repoOptionsHTML();
+  }).catch(() => { /* gh unavailable — leaderboard repos still work */ });
+}
+
+function selectPadRepo(repo, scroll) {
+  padRepo = repo;
+  document.getElementById('pad-repo').value = repo;
+  document.getElementById('pad-tiles').innerHTML = tilesHTML();
+  loadPadBranches();
+  if (scroll) document.querySelector('.spawn-box').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  document.getElementById('prompt-input').focus();
+}
+
+async function loadPadBranches() {
+  const repo = padRepo, dl = document.getElementById('pad-branches');
+  if (!dl) return;
+  dl.innerHTML = '';
+  try {
+    const branches = await fetch(`/api/github/repos/${repo}/branches`).then(r => r.json());
+    if (repo === padRepo && Array.isArray(branches)) dl.innerHTML = branches.map(b => `<option value="${b}">`).join('');
+  } catch { /* gh unavailable — typing a branch still works */ }
+}
+
+async function padSpawn() {
+  const btn = document.getElementById('send-btn');
+  const input = document.getElementById('prompt-input');
+  const branchEl = document.getElementById('pad-branch');
+  const repo = padRepo, branch = branchEl.value.trim();
+  if (!repo || !branch || btn.disabled) return;
+  const form = new FormData();
+  form.append('repo', repo); form.append('branch', branch); form.append('agent', 'claude');
+  form.append('prompt', input.value.trim());
+  if (pendingImage) form.append('file', pendingImage);
+  btn.disabled = true; btn.textContent = 'Spawning…';
+  try {
+    const res = await api('/api/sessions/spawn', { method: 'POST', body: form });
+    if (!res.ok) throw new Error(await errText(res));
+    toast(`Spawning ${short(repo)} / ${branch}${input.value.trim() || pendingImage ? ' — prompt goes in once Claude is up' : ''}`, 'ok');
+    input.value = '';
+    branchEl.value = randomBranch();
+    clearImage();
+    setTimeout(fetchSessions, 3000);
+    setTimeout(fetchStats, 3000);
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = pendingImage ? 'Spawn +image' : 'Spawn';
+  }
+}
+
+const ADJ = ['amber','brisk','calm','dusty','eager','fuzzy','gentle','hazy','idle','jolly','keen','lucky','misty','noble','odd','plain','quiet','rapid','sly','tidy','urban','vivid','wild','zesty'];
+const NOUN = ['otter','falcon','maple','comet','pebble','badger','cedar','delta','ember','fjord','gecko','harbor','iris','jackal','koala','lynx','meadow','nebula','orca','quartz','raven','tundra','walrus','yak'];
+const pick = a => a[Math.random() * a.length | 0];
+const randomBranch = () => `${pick(ADJ)}-${pick(NOUN)}-${Math.random().toString(16).slice(2, 6)}`;
+
+async function quickSpawn(repo) {
+  if (spawning.has(repo)) return;
+  const branch = randomBranch();
+  spawning.add(repo); renderSidebar();
+  try {
+    const res = await api('/api/sessions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo, branch, agent: 'claude' }),
+    });
+    if (!res.ok) throw new Error(await errText(res));
+    toast(`Spawning ${short(repo)} / ${branch}…`, 'ok');
+    setTimeout(fetchSessions, 3000);
+    setTimeout(fetchStats, 3000);
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  } finally {
+    spawning.delete(repo); renderSidebar();
+  }
 }
 
 // ── Reap session ────────────────────────────────────────────────────────────
@@ -509,7 +792,8 @@ function renderCompose() {
   document.body.classList.toggle('detail', !!session);
 
   if (!session) {
-    compose.innerHTML = '<div class="no-session"><div class="card"><p class="v">No session selected.</p><p class="a">Pick one on the left →</p></div></div>';
+    compose.innerHTML = launchpadHTML();
+    padInit();
     return;
   }
 
@@ -644,7 +928,7 @@ function setImage(file) {
         <button class="clear-img" onclick="clearImage()" title="Remove">✕</button>
       </div>
     `;
-    document.getElementById('send-btn').textContent = 'Send +image';
+    document.getElementById('send-btn').textContent = activeId ? 'Send +image' : 'Spawn +image';
     document.getElementById('send-hint').textContent = 'text above is optional';
   };
   reader.readAsDataURL(file);
@@ -652,7 +936,7 @@ function setImage(file) {
 
 // Ctrl+V anywhere on the page — grab image from clipboard
 document.addEventListener('paste', e => {
-  if (!activeId) return;
+  if (!document.getElementById('image-area')) return;   // a session or the launchpad composer
   const items = Array.from(e.clipboardData?.items || []);
   const imgItem = items.find(i => i.type.startsWith('image/'));
   if (!imgItem) return;
@@ -663,9 +947,12 @@ document.addEventListener('paste', e => {
 
 function clearImage() {
   pendingImage = null;
-  document.getElementById('image-area').innerHTML = dropzoneHTML();
-  document.getElementById('send-btn').textContent = 'Send';
-  document.getElementById('send-hint').textContent = SEND_HINT;
+  const area = document.getElementById('image-area');
+  if (area) area.innerHTML = dropzoneHTML();
+  const btn = document.getElementById('send-btn');
+  if (btn) btn.textContent = activeId ? 'Send' : 'Spawn';
+  const hint = document.getElementById('send-hint');
+  if (hint) hint.textContent = SEND_HINT;
 }
 
 
@@ -809,7 +1096,7 @@ async function createSession() {
       body: JSON.stringify({ repo, branch, agent: document.getElementById('new-agent').value,
         account: document.getElementById('new-account').value }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) throw new Error(await errText(res));
     document.getElementById('modal-backdrop').classList.remove('open');
     toast(`Spawning ${repo} / ${branch} on ${host}…`, 'ok');
     setTimeout(fetchSessions, 3000);

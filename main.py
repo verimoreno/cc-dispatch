@@ -15,6 +15,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 
 # Host registry: CC_DISPATCH_HOSTS="hel=local,lm-server=lm-server" — name=ssh alias,
@@ -186,6 +187,27 @@ def _spawn_window(host: str, spawn_cmd: str, window_name: str) -> Optional[str]:
         return None
     window_id = result.stdout.strip()
     return window_id if window_id.startswith("@") else None
+
+
+_SPAWN_FAILED = "cc-spawn failed"
+
+
+def _spawn_failure(host: str, window_id: Optional[str]) -> Optional[str]:
+    """cc-spawn's error if it died in its scratch window, else None. Wrapped
+    spawn commands park on failure (see _spawn_cmd) so the reason survives."""
+    if not window_id:
+        return None
+    pane = _capture_pane(host, window_id) or ""
+    if _SPAWN_FAILED not in pane:
+        return None
+    errs = [l.strip() for l in pane.splitlines() if l.strip().startswith("ERROR")]
+    return "; ".join(errs) or pane.strip().splitlines()[-1]
+
+
+def _spawn_cmd(cmd: str) -> str:
+    """cc-spawn ends by exec-ing an attach, so it only returns on failure: park
+    the window then, or tmux closes it and the error is lost."""
+    return f'{cmd} || {{ echo "{_SPAWN_FAILED} (exit $?)"; sleep 600; }}'
 
 
 def _reap_spawn_window(host: str, window_id: Optional[str]):
@@ -559,6 +581,42 @@ def session_agent(session_id: str, host: str = Depends(_host)):
     return {"agent": kind, "source": source}
 
 
+def _put_image(host: str, worktree: str, data: bytes, filename: Optional[str]) -> str:
+    """Copy an uploaded image into the session's worktree; returns its file name
+    (the container sees it at ~/work/<name>)."""
+    # The extension reaches a remote shell via scp's remote argument, so take it
+    # from the (client-controlled) filename only if it's a plain alphanumeric
+    # suffix. "shot.png;id" would otherwise arrive as a command.
+    ext = Path(filename).suffix.lower() if filename else ""
+    if not re.fullmatch(r"\.[a-z0-9]{1,8}", ext):
+        ext = ".png"
+    fname = f"upload-{uuid.uuid4().hex[:8]}{ext}"
+    remote_path = f"{worktree}/{fname}"
+    # Write upload to a temp file, then copy it to wherever the worktree lives.
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+    try:
+        if HOSTS[host]:
+            subprocess.run(
+                ["scp", "-q", tmp_path, f"{HOSTS[host]}:{shlex.quote(remote_path)}"],
+                check=True,
+                timeout=120,
+            )
+        else:
+            import shutil
+            shutil.copy(tmp_path, remote_path)
+    finally:
+        os.unlink(tmp_path)
+    return fname
+
+
+def _with_image(prompt: Optional[str], fname: str) -> str:
+    """Prompt text plus the image path every agent CLI reads with its file tool."""
+    path = f"~/work/{fname}"
+    return f"{prompt.strip()} {path}" if prompt and prompt.strip() else f"Look at this image: {path}"
+
+
 @app.post("/api/sessions/{session_id}/image")
 async def send_image(
     session_id: str,
@@ -574,32 +632,7 @@ async def send_image(
     pane = _capture_pane(host, session["tmux_session"])
     kind, _ = _kind_from_pane(pane, session)
     _refuse_if_bare_shell(pane, force=False)
-    # The extension reaches a remote shell via scp's remote argument, so take it
-    # from the (client-controlled) filename only if it's a plain alphanumeric
-    # suffix. "shot.png;id" would otherwise arrive as a command.
-    ext = Path(file.filename).suffix.lower() if file.filename else ""
-    if not re.fullmatch(r"\.[a-z0-9]{1,8}", ext):
-        ext = ".png"
-    fname = f"upload-{uuid.uuid4().hex[:8]}{ext}"
-    remote_path = f"{session['path']}/{fname}"
-
-    # Write upload to a temp file, then copy it to wherever the worktree lives.
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
-
-    try:
-        if HOSTS[host]:
-            subprocess.run(
-                ["scp", "-q", tmp_path, f"{HOSTS[host]}:{shlex.quote(remote_path)}"],
-                check=True,
-                timeout=120,
-            )
-        else:
-            import shutil
-            shutil.copy(tmp_path, remote_path)
-    finally:
-        os.unlink(tmp_path)
+    fname = _put_image(host, session["path"], await file.read(), file.filename)
 
     # Every spawner mounts the worktree at ~/work inside the container, so the
     # same path works for Claude Code, OpenCode and Codex. All three read the
@@ -609,8 +642,7 @@ async def send_image(
     # The lead-in sentence matters for the non-Claude CLIs — a bare path with no
     # instruction reads as an ambiguous message.
     container_path = f"~/work/{fname}"
-    inject = f"{prompt.strip()} {container_path}" if prompt and prompt.strip() \
-        else f"Look at this image: {container_path}"
+    inject = _with_image(prompt, fname)
 
     with _hold_for_send(host, session["tmux_session"]):
         tmux_inject(host, session["tmux_session"], inject)
@@ -688,8 +720,51 @@ def list_accounts(host: str = Depends(_host)):
     return [a for a in result.stdout.splitlines() if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", a)]
 
 
+@app.get("/api/stats")
+def spawn_stats(host: str = Depends(_host)):
+    """Per-repo spawn leaderboard from the ledger (one record per repo+branch)."""
+    result = _run(host, ["cc-ledger", "list", "--all"])
+    if result.returncode != 0:
+        return []
+    week_ago = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7 * 86400))
+    repos: dict[str, dict] = {}
+    # line: attempt state repo@ref session mem requested
+    for parts in (l.split() for l in result.stdout.splitlines()):
+        if len(parts) < 6 or "@" not in parts[2] or not _REPO_RE.fullmatch(parts[2].split("@")[0]):
+            continue
+        state, repo, when = parts[1], parts[2].split("@")[0], parts[-1]
+        r = repos.setdefault(repo, {"repo": repo, "total": 0, "week": 0, "live": 0, "failed": 0, "last": ""})
+        r["total"] += 1
+        r["week"] += when >= week_ago
+        r["live"] += state not in ("done", "failed", "abandoned")
+        r["failed"] += state == "failed"
+        r["last"] = max(r["last"], when)
+    return sorted(repos.values(), key=lambda r: (-r["total"], r["repo"]))
+
+
 @app.post("/api/sessions")
 def create_session(body: dict, background_tasks: BackgroundTasks, host: str = Depends(_host)):
+    return _create_session(body, background_tasks, host)
+
+
+@app.post("/api/sessions/spawn")
+async def spawn_with_image(
+    background_tasks: BackgroundTasks,
+    repo: str = Form(...), branch: str = Form(...), agent: str = Form("claude"),
+    account: str = Form(""), prompt: str = Form(""),
+    file: Optional[UploadFile] = File(None),
+    host: str = Depends(_host),
+):
+    """Multipart twin of POST /api/sessions: same spawn, plus an optional image
+    that lands in the new worktree and rides along with the first prompt."""
+    image = (await file.read(), file.filename) if file and file.filename else None
+    body = {"repo": repo, "branch": branch, "agent": agent, "account": account, "prompt": prompt}
+    # sync spawn path (ssh + sleep) off the event loop
+    return await run_in_threadpool(_create_session, body, background_tasks, host, image)
+
+
+def _create_session(body: dict, background_tasks: BackgroundTasks, host: str,
+                    image: Optional[tuple[bytes, Optional[str]]] = None):
     repo = body.get("repo", "").strip()
     branch = body.get("branch", "").strip()
     agent = (body.get("agent") or "claude").strip().lower()
@@ -725,20 +800,31 @@ def create_session(body: dict, background_tasks: BackgroundTasks, host: str = De
     # reaches the shell — matching _spawn_and_inject — so repo/branch can't inject
     # commands even though they're now regex-constrained (defense in depth).
     prefix = f"CC_ACCOUNT={shlex.quote(account)} " if account else ""
-    spawn_cmd = f"{prefix}cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
+    spawn_cmd = _spawn_cmd(f"{prefix}cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}")
     window_id = _spawn_window(host, spawn_cmd, branch)
+    # cc-spawn's preflight (disk, repo, account) fails within a second or two —
+    # report that in the response instead of a 200 that silently never spawns.
+    time.sleep(3)
+    err = _spawn_failure(host, window_id)
+    if err:
+        _reap_spawn_window(host, window_id)
+        raise HTTPException(500, f"cc-spawn failed: {err}")
     # The session comes up at a plain container shell (see _spawn_and_inject);
     # launch the chosen agent CLI in it once it registers.
     _PICKED_AGENTS[(host, branch)] = agent
-    background_tasks.add_task(_launch_agent, host, branch, agent, window_id, prompt)
+    background_tasks.add_task(_launch_agent, host, branch, agent, window_id, prompt, image)
     return {"ok": True, "agent": agent, "account": account or None, "host": host}
 
 
-def _wait_for_session(host: str, branch: str) -> Optional[dict]:
-    """Poll agent-deck until the session spawned for `branch` registers."""
-    time.sleep(15)  # initial wait for cc-spawn to clone and create the worktree
-    for _ in range(33):  # 33 × 5 s + 15 s initial ≈ 3 min max
+def _wait_for_session(host: str, branch: str, window_id: Optional[str] = None) -> Optional[dict]:
+    """Poll agent-deck until the session spawned for `branch` registers.
+    Gives up early if cc-spawn died in its scratch window."""
+    for _ in range(39):  # 39 × 5 s ≈ 3 min max
         time.sleep(5)
+        err = _spawn_failure(host, window_id)
+        if err:
+            print(f"ERROR: cc-spawn failed branch={branch}: {err}", flush=True)
+            return None
         for s in get_sessions(host):
             if (branch in s.get("title", "") or branch in s.get("path", "")) \
                     and s.get("tmux_session"):
@@ -802,13 +888,18 @@ def _start_agent_cli(host: str, tmux_name: str, launcher: str, kind: str) -> boo
 
 
 def _launch_agent(host: str, branch: str, agent: str, window_id: Optional[str] = None,
-                  prompt: str = ""):
+                  prompt: str = "", image: Optional[tuple[bytes, Optional[str]]] = None):
     try:
-        session = _wait_for_session(host, branch)
+        session = _wait_for_session(host, branch, window_id)
         if not session:
-            print(f"ERROR: cc-dispatch timed out waiting for session branch={branch}; "
+            print(f"ERROR: cc-dispatch no session for branch={branch}; "
                   f"{agent} not launched", flush=True)
             return
+        if image:
+            try:
+                prompt = _with_image(prompt, _put_image(host, session["path"], *image))
+            except (subprocess.SubprocessError, OSError) as exc:
+                print(f"ERROR: cc-dispatch image upload failed branch={branch}: {exc}", flush=True)
         tmux_name = session["tmux_session"]
         # One lock hold across launch + first prompt, as in _spawn_and_inject.
         with _inject_lock(host, tmux_name):
@@ -897,10 +988,10 @@ def _spawn_and_inject(host: str, task_id: str, task_title: str, repo_arg: str, b
             if branch in s.get("title", "") or branch in s.get("path", ""):
                 return
 
-        spawn_cmd = f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}"
+        spawn_cmd = _spawn_cmd(f"cc-spawn {shlex.quote(repo_arg)} {shlex.quote(branch)}")
         window_id = _spawn_window(host, spawn_cmd, branch)
 
-        session = _wait_for_session(host, branch)
+        session = _wait_for_session(host, branch, window_id)
         if not session:
             print(f"ERROR: cc-dispatch timed out waiting for session branch={branch} task_id={task_id}", flush=True)
             return
