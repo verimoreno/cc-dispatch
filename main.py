@@ -772,9 +772,12 @@ def _create_session(body: dict, background_tasks: BackgroundTasks, host: str,
     # Optional first prompt, typed into the agent once its TUI is up — how a
     # session spawns a sibling (see host/fleet/CLAUDE.md.tmpl). Newlines are
     # fine (tmux_inject pastes one bracketed block); other control chars aren't.
-    prompt = (body.get("prompt") or "").strip()
-    if len(prompt) > 4000 or re.search(r"[\x00-\x08\x0b-\x1f\x7f]", prompt):
-        raise HTTPException(400, "prompt contains control characters or exceeds 4000 chars")
+    # Browsers send a multipart textarea's newlines as CRLF, so fold those first.
+    prompt = (body.get("prompt") or "").strip().replace("\r\n", "\n").replace("\r", "\n")
+    if len(prompt) > 4000:
+        raise HTTPException(400, f"prompt is {len(prompt)} chars; the limit is 4000")
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", prompt):
+        raise HTTPException(400, "prompt contains control characters")
     if not repo or not branch:
         raise HTTPException(400, "repo and branch required")
     if agent not in _LAUNCHERS:

@@ -37,5 +37,17 @@ class SpawnFailure(unittest.TestCase):
         finally:
             main._capture_pane = orig
 
+class SpawnPrompt(unittest.TestCase):
+    def test_crlf_prompt_passes_validation(self):
+        # multipart textareas arrive with CRLF; it must get past the prompt check
+        # (and stop at the next one, since repo/branch are empty here)
+        with self.assertRaises(main.HTTPException) as e:
+            main._create_session({"prompt": "Olá Veri,\r\nlinha dois"}, None, "hel")
+        self.assertEqual(e.exception.detail, "repo and branch required")
+        with self.assertRaises(main.HTTPException) as e:
+            main._create_session({"prompt": "a\x1bb"}, None, "hel")
+        self.assertEqual(e.exception.detail, "prompt contains control characters")
+
+
 if __name__ == "__main__":
     unittest.main()
